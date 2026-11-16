@@ -71,7 +71,7 @@
   // ---------------------------------------------------------------- API
   function api(fn) {
     var args = Array.prototype.slice.call(arguments, 1);
-    if (fn !== 'apiLogin' && fn !== 'apiPing' && fn !== 'apiLogo') args.unshift(S.token);
+    if (fn !== 'apiLogin' && fn !== 'apiPing' && fn !== 'apiLogo' && fn !== 'apiAppFind') args.unshift(S.token);
     busy(true);
     return fetch(S.url, {
       method: 'POST', redirect: 'follow',
@@ -89,6 +89,49 @@
       }, function (e) { busy(false); throw e && e.code ? e : { code: 'ERR_NETWORK' }; });
   }
   function fail(e) { toast(errText(e), true); }
+
+  // ---------------------------------------------------------------- หาแบรนด์ของ User (ไม่ต้องใส่ลิงก์เอง)
+  function brands() { return (window.DMS_BRANDS || []).filter(function (b) { return b && /^(https:\/\/|http:\/\/localhost)/.test(b.url || ''); }); }
+  function urlMap() { try { return JSON.parse(LS.get('urlmap') || '{}'); } catch (e) { return {}; } }
+  function ask(url, fn, args) {
+    return fetch(url, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ fn: fn, args: args || [] }) })
+      .then(function (r) { return r.json(); }).then(function (j) { return j && j.ok ? j.data : null; }).catch(function () { return null; });
+  }
+  // คืนลิงก์ระบบของแบรนด์ที่มี User นี้ (ส่งไปแค่ชื่อ User ไม่ส่ง PIN)
+  function findBrand(un) {
+    var list = brands();
+    if (!list.length) return Promise.resolve(S.url || '');          // แบบเก่า: ใช้ลิงก์ที่ตั้งไว้
+    if (list.length === 1) return Promise.resolve(list[0].url);     // มีแบรนด์เดียว ไม่ต้องถาม
+    var known = urlMap()[un];
+    if (known && list.some(function (b) { return b.url === known; })) return Promise.resolve(known);
+    busy(true);
+    return Promise.all(list.map(function (b) { return ask(b.url, 'apiAppFind', [un]); })).then(function (rs) {
+      busy(false);
+      var hits = list.map(function (b, i) { return { b: b, r: rs[i] }; }).filter(function (x) { return x.r && x.r.found; });
+      if (!hits.length) {
+        if (rs.every(function (r) { return !r; })) throw { code: 'ERR_NETWORK' };
+        throw { code: 'ERR_LOGIN_FAILED' };
+      }
+      if (hits.length === 1) return hits[0].b.url;
+      return pickBrand(hits);
+    });
+  }
+  function pickBrand(hits) {     // User ซ้ำกันหลายแบรนด์ (ไม่ควรเกิด) → ให้เลือก
+    return new Promise(function (ok, no) {
+      var m = document.createElement('div');
+      m.className = 'sheet-mask';
+      m.innerHTML = '<div class="sheet"><h3 style="margin:0 0 10px">เลือกแบรนด์ที่จะเข้า</h3>' +
+        hits.map(function (x, i) { return '<button class="btn block" data-i="' + i + '" style="margin-bottom:8px">' + esc(x.r.salesAppName || x.b.name) + '<div class="muted small">' + esc(x.r.company || x.b.name) + '</div></button>'; }).join('') +
+        '<button class="btn block" data-i="-1">ยกเลิก</button></div>';
+      document.body.appendChild(m);
+      m.onclick = function (e) {
+        var t = e.target.closest('[data-i]'); if (!t) return;
+        m.remove(); var i = +t.getAttribute('data-i');
+        if (i < 0) no({ code: 'ERR_CANCEL' }); else ok(hits[i].b.url);
+      };
+    });
+  }
 
   // ---------------------------------------------------------------- shell / router
   var VIEWS = {};
@@ -264,19 +307,25 @@
         '<input class="input c" id="un" placeholder="User เช่น V01, PS01" autocapitalize="characters" autocomplete="username" value="' + esc(user) + '">' +
         '<div class="dots">' + [0, 1, 2, 3, 4, 5].map(function () { return '<span></span>'; }).join('') + '</div>' +
         '<div class="pad">' + [1, 2, 3, 4, 5, 6, 7, 8, 9].map(function (n) { return '<button type="button" data-k="' + n + '">' + n + '</button>'; }).join('') +
-        '<button type="button" class="x" data-k="set">ตั้งค่า</button><button type="button" data-k="0">0</button><button type="button" class="x" data-k="del">ลบ</button></div>' +
+        (brands().length ? '<span></span>' : '<button type="button" class="x" data-k="set">ตั้งค่า</button>') + '<button type="button" data-k="0">0</button><button type="button" class="x" data-k="del">ลบ</button></div>' +
         '<p class="muted small" style="margin-top:16px">ลืม PIN? ติดต่อแอดมินเพื่อรีเซ็ต</p></div>';
       var dots = function () { $$('.dots span').forEach(function (d, i) { d.classList.toggle('on', i < pin.length); }); };
       var submit = function () {
         var un = $('#un').value.trim().toUpperCase();
         if (!un) { toast('กรุณากรอก User', true); pin = ''; dots(); return; }
-        api('apiLogin', un, pin, 'APP').then(function (r) {
+        findBrand(un).then(function (url) {
+          if (!url) throw { code: 'ERR_NETWORK' };
+          if (url !== S.url) { S.url = url; LS.set('url', url); }
+          return api('apiLogin', un, pin, 'APP');
+        }).then(function (r) {
           LS.set('username', un);
+          var mp = urlMap(); mp[un] = S.url; LS.set('urlmap', JSON.stringify(mp));
+          loadBrand();
           S.token = r.token; S.boot = r.boot;
           LS.set('token', r.token);
           if (r.boot.user.MustChangePwd) { S.view = { name: 'changePin', params: { forced: true } }; render(); return; }
           start();
-        }).catch(function (e) { pin = ''; dots(); fail(e); });
+        }).catch(function (e) { pin = ''; dots(); if (e && e.code !== 'ERR_CANCEL') fail(e); });
       };
       $$('[data-k]').forEach(function (b) {
         b.onclick = function () {
@@ -983,8 +1032,11 @@
   function boot() {
     $('#back').onclick = back;
     applyBrand();
+    var bl = brands();
     S.url = LS.get('url') || window.DMS_URL || '';
     if (window.DMS_URL && !LS.get('url')) S.url = window.DMS_URL;
+    // ลิงก์ที่จำไว้ต้องเป็นแบรนด์ที่ยังอยู่ในรายชื่อ
+    if (bl.length && !bl.some(function (b) { return b.url === S.url; })) { S.url = bl[0].url; LS.set('url', S.url); }
     if (!S.url) { S.view = { name: 'setup', params: {} }; render(); return; }
     // แอปขอ PIN ทุกครั้งที่เปิด (ไม่จำการเข้าระบบ)
     LS.del('token');
