@@ -456,9 +456,20 @@
           '<div class="row small" style="margin-top:8px;gap:6px">' + (c.Unpaid > 0 ? '<span class="chip r">ค้างชำระ ' + money(c.Unpaid) + '</span>' : '<span class="chip g">ไม่มียอดค้าง</span>') +
           '<span class="chip">เครดิต ' + esc(c.CreditDays || 0) + ' วัน</span></div>' +
           (c.Lat ? '<div style="margin-top:8px"><a class="small" target="_blank" rel="noopener" href="https://maps.google.com/?q=' + esc(c.Lat) + ',' + esc(c.Lng) + '">📍 เปิดแผนที่</a></div>' : '') +
-          '</div><button class="btn pri block" id="sell" type="button">' + (isVan() ? 'ขายร้านนี้' : 'สั่งขายร้านนี้') + '</button><div style="height:8px"></div>' +
+          '</div><div id="visitBox"></div><button class="btn pri block" id="sell" type="button">' + (isVan() ? 'ขายร้านนี้' : 'สั่งขายร้านนี้') + '</button><div style="height:8px"></div>' +
           '<button class="btn block" id="gps" type="button">📍 บันทึกตำแหน่ง GPS ตอนนี้</button>' +
           '<div class="card" style="margin-top:10px"><h3>บิล / ออเดอร์ล่าสุด</h3><div id="h" class="small muted">กำลังโหลด…</div></div>';
+        var drawVisit = function () {
+          var v = curVisit(), here = v && v.cid === c.CustomerId;
+          $('#visitBox').innerHTML = here
+            ? '<div class="card visit on"><div class="between"><div><div class="b">🟢 กำลังเยี่ยมร้านนี้</div><div class="muted small">เช็คอิน ' + esc(String(v.at).substring(11, 16)) + ' น. · ' + visitMin(v) + ' นาที</div></div>' +
+              '<button class="btn" id="vOut" type="button">เช็คเอาท์</button></div></div>'
+            : '<div class="card visit"><div class="between"><div><div class="b">เยี่ยมร้าน</div><div class="muted small">' + (v ? 'ตอนนี้อยู่ที่ ' + esc(v.name) + ' (จะเช็คเอาท์ให้อัตโนมัติ)' : 'กดเช็คอินเมื่อถึงร้าน') + '</div></div>' +
+              '<button class="btn grn" id="vIn" type="button">📍 เช็คอิน</button></div></div>';
+          if ($('#vIn')) $('#vIn').onclick = function () { visitIn(c.CustomerId, c.Name, false); toast('เช็คอินร้าน ' + c.Name); drawVisit(); };
+          if ($('#vOut')) $('#vOut').onclick = function () { visitOut(); toast('เช็คเอาท์แล้ว'); drawVisit(); };
+        };
+        drawVisit();
         $('#sell').onclick = function () { go('sell', { party: c.CustomerId }); };
         $('#gps').onclick = function () {
           getGps().then(function (g) { return api('apiCustomerSetGps', c.CustomerId, g.lat, g.lng); })
@@ -601,7 +612,10 @@
           return;
         }
         var stock = r[3] && r[3].visible ? r[3].qty : null;
-        if (!S.cart || (p.party && S.cart.party !== p.party)) S.cart = newCart(p.party || '');
+        if (!S.cart || (p.party && S.cart.party !== p.party)) {
+          if (S.cart && S.cart.party && S.cart.started) trk('ORDER_CANCEL', { cid: S.cart.party });
+          S.cart = newCart(p.party || '');
+        }
         var cart = S.cart;
         var party = S.parties.filter(function (c) { return c.id === cart.party; })[0];
         if (!party) {
@@ -610,6 +624,7 @@
           return;
         }
         if (party.blocked) { el.innerHTML = '<div class="warn">ร้าน ' + esc(party.name) + ' ถูกระงับการขาย กรุณาติดต่อแอดมิน</div>'; return; }
+        if (!cart.started) { cart.started = stamp(); visitIn(party.id, party.name, true); trk('ORDER_START', { cid: party.id }); }
         el.innerHTML = '<div class="sticky"><div class="card" style="margin:0 0 6px"><div class="between"><div><div class="b">' + esc(party.name) + '</div>' +
           '<div class="muted small">' + esc(party.id) + (party.unpaid > 0 ? ' · ค้างชำระ ' + money(party.unpaid) : '') + '</div></div>' +
           '<button class="btn" id="chg" type="button">เปลี่ยน</button></div></div>' +
@@ -721,6 +736,7 @@
           confirmBox(isVan() ? 'ยืนยันออกบิล' : 'ยืนยันออเดอร์', msg, 'ยืนยัน').then(function (y) {
             if (!y) return;
             api('apiDocSave', doc, { submit: true }).then(function (res) {
+              trk('ORDER_SAVE', { cid: party.id, did: res.DocId }); trkFlush();
               S.cart = null; S.parties = null;
               toast((isVan() ? 'ออกบิล ' : 'ส่งออเดอร์ ') + res.DocNo + ' แล้ว');
               S.stack = [{ name: 'home', params: {} }];
@@ -1016,9 +1032,91 @@
     });
   }
 
+  // ---------------------------------------------------------------- ติดตามการทำงาน (GPS / สถานะแอป / เยี่ยมร้าน / เวลาคีย์ออเดอร์)
+  // ส่งให้หลังบ้านเป็นชุดแบบเงียบ ๆ (ไม่ขึ้นตัวหมุน/ข้อความ) · ส่งไม่ได้จะเก็บคิวไว้ส่งรอบถัดไป
+  var TRK = { q: [], timer: null, pos: null, bat: '', intervalMin: 2, enabled: true, busy: false, watch: null };
+  try { TRK.q = JSON.parse(LS.get('trkq') || '[]'); } catch (e) { TRK.q = []; }
+  function stamp() { var d = new Date(); return ymd(d) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()); }
+  function trkSave() { LS.set('trkq', JSON.stringify(TRK.q.slice(-300))); }
+  function trk(ev, extra) {
+    if (!S.token || !TRK.enabled) return;
+    var e = { ev: ev, ts: stamp(), bat: TRK.bat };
+    if (TRK.pos) { e.lat = TRK.pos.lat; e.lng = TRK.pos.lng; e.acc = TRK.pos.acc; }
+    Object.keys(extra || {}).forEach(function (k) { e[k] = extra[k]; });
+    TRK.q.push(e);
+    if (TRK.q.length > 300) TRK.q.shift();
+    trkSave();
+  }
+  function trkFlush(keepalive) {
+    if (!S.token || !S.url || !TRK.q.length || (TRK.busy && !keepalive)) return;
+    var batch = TRK.q.slice(0, 60);
+    TRK.busy = true;
+    fetch(S.url, { method: 'POST', redirect: 'follow', keepalive: !!keepalive, headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                   body: JSON.stringify({ fn: 'apiTrack', args: [S.token, batch] }) })
+      .then(function (r) { return r.json(); }).then(function (j) {
+        TRK.busy = false;
+        if (!j || !j.ok) { if (j && j.code === 'ERR_SESSION_EXPIRED') { TRK.q = []; trkSave(); } return; }
+        TRK.q = TRK.q.slice(batch.length); trkSave();
+        if (j.data) { TRK.enabled = j.data.enabled !== false; if (j.data.intervalMin && j.data.intervalMin !== TRK.intervalMin) { TRK.intervalMin = j.data.intervalMin; trkTimer(); } }
+      }).catch(function () { TRK.busy = false; });
+  }
+  function trkTimer() {
+    if (TRK.timer) clearInterval(TRK.timer);
+    TRK.timer = setInterval(function () {
+      if (!S.token) return;
+      if (document.visibilityState === 'visible') trk('PING');
+      trkFlush();
+    }, Math.max(TRK.intervalMin, 1) * 60000);
+  }
+  function trkStart() {
+    if (navigator.geolocation && TRK.watch === null) {
+      TRK.watch = navigator.geolocation.watchPosition(function (p) {
+        TRK.pos = { lat: +p.coords.latitude.toFixed(6), lng: +p.coords.longitude.toFixed(6), acc: Math.round(p.coords.accuracy || 0) };
+      }, function () { }, { enableHighAccuracy: true, maximumAge: 60000, timeout: 30000 });
+    }
+    if (navigator.getBattery) navigator.getBattery().then(function (b) {
+      var upd = function () { TRK.bat = Math.round(b.level * 100); };
+      upd(); b.addEventListener('levelchange', upd);
+    }).catch(function () { });
+    trk('OPEN');
+    setTimeout(function () { trk('PING'); trkFlush(); }, 8000);     // รอ GPS จับตำแหน่งได้ก่อน
+    trkTimer();
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (!S.token) return;
+    trk(document.visibilityState === 'visible' ? 'SHOW' : 'HIDE');
+    trkFlush(document.visibilityState !== 'visible');
+  });
+  window.addEventListener('pagehide', function () { if (S.token) { trk('CLOSE'); trkFlush(true); } });
+
+  // เยี่ยมร้าน (เช็คอิน/เช็คเอาท์) — จำไว้ในเครื่อง เปิดแอปใหม่ก็ยังอยู่
+  function curVisit() { try { return JSON.parse(LS.get('visit') || 'null'); } catch (e) { return null; } }
+  function visitIn(cid, name, auto) {
+    var v = curVisit();
+    if (v && v.cid === cid) return v;
+    if (v) trk('VISIT_OUT', { cid: v.cid, note: 'auto' });
+    v = { cid: cid, name: name || cid, at: stamp() };
+    LS.set('visit', JSON.stringify(v));
+    trk('VISIT_IN', { cid: cid, note: auto ? 'auto' : '' });
+    trkFlush();
+    return v;
+  }
+  function visitOut() {
+    var v = curVisit();
+    if (!v) return;
+    trk('VISIT_OUT', { cid: v.cid });
+    LS.del('visit');
+    trkFlush();
+  }
+  function visitMin(v) {
+    var m = String(v.at).match(/(\d+)-(\d+)-(\d+) (\d+):(\d+)/);
+    if (!m) return 0;
+    return Math.max(Math.round((Date.now() - new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime()) / 60000), 0);
+  }
+
   // ---------------------------------------------------------------- start / logout
   function logout(expired) {
-    if (S.token && !expired) api('apiLogout').catch(function () { });
+    if (S.token && !expired) { visitOut(); trk('CLOSE'); trkFlush(true); api('apiLogout').catch(function () { }); }
     S.token = ''; S.boot = null; S.cat = null; S.parties = null; S.cart = null; S.stack = [];
     LS.del('token');
     if (expired) toast(ERR.ERR_SESSION_EXPIRED, true);
@@ -1028,6 +1126,7 @@
     S.stack = []; S.view = { name: 'home', params: {} };
     render();
     loadCatalog().catch(function () { });
+    trkStart();
   }
   function boot() {
     $('#back').onclick = back;
