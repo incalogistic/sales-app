@@ -1,4 +1,4 @@
-/* แอปพนักงานขาย (แวนเซลล์ / พรีเซลล์) เชื่อมกับระบบ DMS
+/* INCA Go Sales — แอปพนักงานขาย (แวนเซลล์ / พรีเซลล์) เชื่อมกับระบบ DMS
  * ทุกข้อมูลอ่าน/เขียนผ่าน Web App ของ DMS (POST {fn, args})
  * ไฟล์เดียว ไม่ใช้ไลบรารีภายนอก */
 (function () {
@@ -215,21 +215,22 @@
     return '#' + [f(r), f(g), f(b)].map(function (c) { return (c < 16 ? '0' : '') + c.toString(16); }).join('');
   }
   function applyBrand() {
-    var b = brand(), c = /^#[0-9A-Fa-f]{6}$/.test(b.color || '') ? b.color : '#8B5E3C';
+    var b = brand(), c = /^#[0-9A-Fa-f]{6}$/.test(b.color || '') ? b.color : '#1D4ED8';
     var st = document.documentElement.style;
     st.setProperty('--brown', c); st.setProperty('--dark', shade(c, -0.34)); st.setProperty('--soft', shade(c, 0.86));
     var m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', shade(c, -0.34));
-    document.title = b.salesAppName || 'แอปพนักงานขาย';
+    document.title = b.salesAppName || 'INCA Go Sales';
   }
   function logoHtml() {
     var b = brand();
-    if (b.url) return '<img class="logo" style="object-fit:contain;background:#fff;padding:6px" src="' + esc(b.url) + '" alt="">';
-    var name = (b.salesAppName || 'เซลล์').replace(/[\s\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]+/g, '');
-    return '<div class="logo">' + esc(name.substring(0, 1)) + '</div>';
+    var bg = '<div class="login-bg"></div>';
+    if (b.url) return bg + '<img class="logo" style="object-fit:contain;background:#fff;padding:6px" src="' + esc(b.url) + '" alt="">';
+    return bg + '<img class="logo mark" src="icons/icon-192.png" alt="">';   // ไอคอน INCA Go
   }
+  function taglineHtml() { var t = brand().tagline; return t ? '<div class="tagline">' + esc(t) + '</div>' : ''; }
   function loadBrand() {
     return api('apiLogo').then(function (b) {
-      LS.set('brand', JSON.stringify({ url: b.url && b.url.length < 300000 ? b.url : '', salesAppName: b.salesAppName, company: b.company, color: b.color }));
+      LS.set('brand', JSON.stringify({ url: b.url && b.url.length < 300000 ? b.url : '', salesAppName: b.salesAppName, company: b.company, color: b.color, tagline: b.tagline || '' }));
       applyBrand();
     }).catch(function () { });
   }
@@ -237,7 +238,7 @@
   // ---------------------------------------------------------------- setup
   VIEWS.setup = {
     render: function (el) {
-      el.innerHTML = '<div class="login">' + logoHtml() + '<h2 style="margin:0">ตั้งค่าการเชื่อมต่อ</h2>' +
+      el.innerHTML = '<div class="login">' + logoHtml() + '<h2 style="margin:0 0 2px">' + esc(brand().salesAppName || 'INCA Go Sales') + '</h2>' + taglineHtml() + '<h3 style="margin:6px 0 0">ตั้งค่าการเชื่อมต่อ</h3>' +
         '<p class="muted small">วางลิงก์ Web App ของระบบ DMS (ลงท้ายด้วย /exec)<br>ขอลิงก์ได้จาก System Support</p>' +
         '<label class="f" style="text-align:left"><span>ลิงก์ DMS</span><input class="input" id="u" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" value="' + esc(S.url) + '"></label>' +
         '<button class="btn pri block" id="ok" type="button">เชื่อมต่อ</button></div>';
@@ -258,7 +259,7 @@
   VIEWS.login = {
     render: function (el) {
       var user = LS.get('username') || '', pin = '';
-      el.innerHTML = '<div class="login">' + logoHtml() + '<h2 style="margin:0 0 4px">' + esc(brand().salesAppName || 'แอปพนักงานขาย') + '</h2>' +
+      el.innerHTML = '<div class="login">' + logoHtml() + '<h2 style="margin:0 0 4px">' + esc(brand().salesAppName || 'INCA Go Sales') + '</h2>' + taglineHtml() +
         '<div class="muted small" style="margin-bottom:14px">' + esc(brand().company || '') + (brand().company ? ' · ' : '') + 'เข้าระบบด้วย User และ PIN</div>' +
         '<input class="input c" id="un" placeholder="User เช่น V01, PS01" autocapitalize="characters" autocomplete="username" value="' + esc(user) + '">' +
         '<div class="dots">' + [0, 1, 2, 3, 4, 5].map(function () { return '<span></span>'; }).join('') + '</div>' +
@@ -351,7 +352,7 @@
       el.innerHTML = '<div class="list">' + items.map(function (i) { return '<div class="it" data-go="' + i[0] + '">' + esc(i[1]) + '</div>'; }).join('') +
         '<div class="it" data-go="changePin">เปลี่ยน PIN</div><div class="it" id="refresh">โหลดข้อมูลสินค้า/ลูกค้าใหม่</div>' +
         '<div class="it" id="out" style="color:var(--red)">ออกจากระบบ</div></div>' +
-        '<p class="muted small c">' + esc(brand().salesAppName || 'แอปพนักงานขาย') + ' · เชื่อมต่อ DMS</p>';
+        '<p class="muted small c">' + esc(brand().salesAppName || 'INCA Go Sales') + ' · เชื่อมต่อ INCA Go</p>';
       $$('[data-go]').forEach(function (b) { b.onclick = function () { go(b.getAttribute('data-go')); }; });
       $('#refresh').onclick = function () { Promise.all([loadCatalog(true), loadParties(true)]).then(function () { toast('อัปเดตข้อมูลแล้ว'); }).catch(fail); };
       $('#out').onclick = function () { confirmBox('ออกจากระบบ', 'ต้องการออกจากระบบใช่ไหม', 'ออกจากระบบ').then(function (y) { if (y) logout(); }); };

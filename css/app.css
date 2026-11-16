@@ -1,4 +1,4 @@
-:root{--brown:#8B5E3C;--dark:#5C3D2E;--ink:#3B2F2A;--muted:#6E5F55;--line:#E8DFD3;--cream:#F7F2EB;--soft:#F3EAE0;--green:#2F6B3F;--greenbg:#E6F2E8;--red:#A33A33;--redbg:#F8E5E3;--amber:#E0B25A;--amberbg:#FBF1DC}
+:root{--brown:#1D4ED8;--dark:#1E3A8A;--ink:#1E293B;--muted:#64748B;--line:#E2E8F0;--cream:#F5F7FB;--soft:#E8EEFC;--green:#2F6B3F;--greenbg:#E6F2E8;--red:#A33A33;--redbg:#F8E5E3;--amber:#E0B25A;--amberbg:#FBF1DC}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;background:var(--cream);color:var(--ink);font-family:'Noto Sans Thai',Tahoma,sans-serif;font-size:15px}
 button,input,select,textarea{font:inherit;color:inherit}
@@ -74,6 +74,9 @@ table.t .r{text-align:right}
 /* login */
 .login{max-width:360px;margin:6vh auto 0;text-align:center}
 .logo{width:76px;height:76px;border-radius:20px;background:var(--dark);color:#fff;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;margin:0 auto 10px}
+img.logo.mark{background:none;padding:0;width:84px;height:84px;border-radius:22px;box-shadow:0 12px 26px rgba(15,23,42,.22);margin-bottom:14px}
+.tagline{font-size:13.5px;line-height:1.6;color:var(--muted);margin:8px auto 16px;max-width:330px}
+.login-bg{position:fixed;inset:0;z-index:-1;background:radial-gradient(120% 55% at 50% 0%,var(--soft),var(--cream) 60%)}
 .dots{display:flex;justify-content:center;gap:12px;margin:16px 0}
 .dots span{width:14px;height:14px;border-radius:50%;border:2px solid var(--brown)}
 .dots span.on{background:var(--brown)}
