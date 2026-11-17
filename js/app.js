@@ -1290,28 +1290,30 @@
     var incOf = function (v) { return vt === 'EX' ? v * (1 + rate / 100) : v; };
     var sumLines = items.reduce(function (t, i) { return t + num(i.LineTotal); }, 0), hd = num(d.HeaderDiscountAmount);
     var share = sumLines ? Math.max(0, 1 - hd / sumLines) : 1;
-    var pg = (S.promo && S.promo.groups) || {};
-    var hdPct = sumLines ? Math.round(hd / sumLines * 10000) / 100 : 0;
+    var pg = (S.promo && S.promo.groups) || {}, groups = {}, order = [];
     var rows = items.map(function (i) {
-      var free = String(i.IsFree) === 'TRUE', gross = num(i.GrossAmount), dAmt = num(i.DiscountAmount), lt = num(i.LineTotal);
-      var net = lt * share, pct = num(i.DiscountValue) || num(i.AutoDiscountPct);
-      var gName = i.PromoGroupId ? ((pg[i.PromoGroupId] && pg[i.PromoGroupId].GroupName) || i.PromoGroupId) : '';
-      var promo = free ? '<span class="pchip">ของแถม</span>' : (dAmt > 0 ? '<span class="pchip">' + (gName ? esc(gName) + ' · ' : '') + 'ลด ' + qfmt(pct) + (i.DiscountType === 'BAHT' ? ' บ.' : '%') + ' = -' + money(dAmt) + '</span>' : '');
-      return '<div class="bi"><div class="between"><div><div class="small muted">' + esc(i.ProductCode) + '</div><div class="b">' + esc(i.ProductName) + '</div></div>' +
-        '<div class="r b">' + qfmt(i.Qty) + ' ' + esc(i.Unit) + '</div></div>' + (promo ? '<div>' + promo + '</div>' : '') +
-        '<div class="bigrid small"><span class="muted">ราคา/หน่วย ก่อน VAT</span><span class="r">' + money(exOf(num(i.UnitPrice))) + '</span>' +
-        '<span class="muted">มูลค่าสินค้า</span><span class="r">' + money(gross) + '</span>' +
-        (dAmt > 0 ? '<span class="muted">ส่วนลดโปร</span><span class="r t-r">-' + money(dAmt) + '</span>' : '') +
-        (hd > 0 && lt > 0 ? '<span class="muted">ส่วนลดร้าน ' + qfmt(hdPct) + '%</span><span class="r t-r">-' + money(lt - net) + '</span>' : '') +
-        (vt !== 'NONE' ? '<span class="muted">ก่อน VAT</span><span class="r">' + money(exOf(net)) + '</span>' : '') +
-        '<span class="b">' + (vt === 'NONE' ? 'สุทธิ' : 'รวม VAT') + '</span><span class="r b">' + money(incOf(net)) + '</span></div></div>';
+      var free = String(i.IsFree) === 'TRUE', dAmt = num(i.DiscountAmount), lt = num(i.LineTotal), net = lt * share;
+      var pct = num(i.DiscountValue) || num(i.AutoDiscountPct), cf = (unitsOf(i.ProductCode)[0] || { f: 1 }).f || 1;
+      if (i.PromoGroupId && !free) {
+        var g = groups[i.PromoGroupId];
+        if (!g) { g = groups[i.PromoGroupId] = { name: (pg[i.PromoGroupId] && pg[i.PromoGroupId].GroupName) || i.PromoGroupId, cases: 0, pct: 0 }; order.push(g); }
+        g.cases += num(i.QtyBase) / cf; if (dAmt > 0 && i.DiscountType !== 'BAHT') g.pct = Math.max(g.pct, pct);
+      }
+      var sub = free ? '<span class="t-g">ของแถม</span>'
+        : money(exOf(num(i.UnitPrice))) + '/' + esc(i.Unit) + (dAmt > 0 ? ' · <span class="t-r">ลด ' + (i.DiscountType === 'BAHT' ? money(dAmt) + ' บ.' : qfmt(pct) + '%') + '</span>' : '') +
+          (vt !== 'NONE' ? ' · ก่อน VAT ' + money(exOf(net)) : '');
+      return '<div class="bl"><div class="bl1"><span class="bln">' + esc(i.ProductName) + '</span><span class="blq">' + qfmt(i.Qty) + ' ' + esc(i.Unit) + '</span>' +
+        '<span class="bla">' + money(incOf(net)) + '</span></div><div class="bl2">' + sub + '</div></div>';
     }).join('');
+    var promo = order.length ? '<div class="card bpromo"><div class="muted small">โปรที่ร้านได้รับ</div>' + order.map(function (g) {
+      return '<div class="between small"><span class="bln">' + esc(g.name) + '</span><b>' + qfmt(Math.round(g.cases * 100) / 100) + ' หีบ → ' + (g.pct ? 'ลด ' + qfmt(g.pct) + '%' : 'ยังไม่ได้ส่วนลด') + '</b></div>';
+    }).join('') + (hd ? '<div class="between small"><span>ส่วนลดร้าน</span><b>' + (d.HeaderDiscountType !== 'BAHT' ? 'ลด ' + qfmt(d.HeaderDiscountValue) + '%' : money(hd) + ' บ.') + '</b></div>' : '') + '</div>' : '';
     var beforeVat = num(d.AfterDiscount) - (vt === 'IN' ? num(d.VatAmount) : 0);
-    return '<div class="card"><h3>รายการสินค้า (' + items.length + ')</h3>' + rows +
+    return promo + '<div class="card"><div class="between"><h3 style="margin:0">รายการสินค้า (' + items.length + ')</h3><span class="muted small">' + (vt === 'NONE' ? 'ยอดสุทธิ' : 'รวม VAT') + '</span></div>' + rows +
       '<div class="tot" style="margin-top:8px"><div><span class="muted">รวมราคาสินค้า</span><span>' + money(d.SubTotal) + '</span></div>' +
       (num(d.LineDiscountTotal) ? '<div><span class="muted">ส่วนลดโปร</span><span>-' + money(d.LineDiscountTotal) + '</span></div>' : '') +
-      (hd ? '<div><span class="muted">ส่วนลดร้าน' + (d.HeaderDiscountType !== 'BAHT' ? ' ' + qfmt(d.HeaderDiscountValue) + '%' : '') + '</span><span>-' + money(hd) + '</span></div>' : '') +
-      (vt !== 'NONE' ? '<div><span class="muted">ก่อน VAT</span><span>' + money(beforeVat) + '</span></div><div><span class="muted">VAT ' + qfmt(rate) + '%</span><span>' + money(d.VatAmount) + '</span></div>' : '<div><span class="muted">ไม่คิด VAT</span><span>-</span></div>') +
+      (hd ? '<div><span class="muted">ส่วนลดร้าน</span><span>-' + money(hd) + '</span></div>' : '') +
+      (vt !== 'NONE' ? '<div><span class="muted">ก่อน VAT</span><span>' + money(beforeVat) + '</span></div><div><span class="muted">VAT ' + qfmt(rate) + '%</span><span>' + money(d.VatAmount) + '</span></div>' : '') +
       '<div class="grand"><span>รวมทั้งสิ้น</span><span>' + money(d.NetTotal) + '</span></div></div></div>';
   }
   VIEWS.bill = {

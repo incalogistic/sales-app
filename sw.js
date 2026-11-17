@@ -1,5 +1,5 @@
 // เก็บไฟล์หน้าแอปไว้ในเครื่อง: เปิดแอปได้แม้ไม่มีสัญญาณ (ข้อมูลขายเก็บในเครื่องและส่งเมื่อมีสัญญาณ)
-const CACHE = 'sales-app-v11';
+const CACHE = 'sales-app-v12';
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'config.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon.svg', 'icons/apple-touch-icon.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
