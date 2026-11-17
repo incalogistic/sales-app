@@ -1309,7 +1309,7 @@
       return '<div class="between small"><span class="bln">' + esc(g.name) + '</span><b>' + qfmt(Math.round(g.cases * 100) / 100) + ' หีบ → ' + (g.pct ? 'ลด ' + qfmt(g.pct) + '%' : 'ยังไม่ได้ส่วนลด') + '</b></div>';
     }).join('') + (hd ? '<div class="between small"><span>ส่วนลดร้าน</span><b>' + (d.HeaderDiscountType !== 'BAHT' ? 'ลด ' + qfmt(d.HeaderDiscountValue) + '%' : money(hd) + ' บ.') + '</b></div>' : '') + '</div>' : '';
     var beforeVat = num(d.AfterDiscount) - (vt === 'IN' ? num(d.VatAmount) : 0);
-    return promo + '<div class="card"><div class="between"><h3 style="margin:0">รายการสินค้า (' + items.length + ')</h3><span class="muted small">' + (vt === 'NONE' ? 'ยอดสุทธิ' : 'รวม VAT') + '</span></div>' + rows +
+    return promo + '<div class="card"><div class="bl1 blh"><h3 class="bln" style="margin:0">รายการสินค้า (' + items.length + ')</h3><span class="blq">จำนวน</span><span class="bla">' + (vt === 'NONE' ? 'ยอดสุทธิ' : 'รวม VAT') + '</span></div>' + rows +
       '<div class="tot" style="margin-top:8px"><div><span class="muted">รวมราคาสินค้า</span><span>' + money(d.SubTotal) + '</span></div>' +
       (num(d.LineDiscountTotal) ? '<div><span class="muted">ส่วนลดโปร</span><span>-' + money(d.LineDiscountTotal) + '</span></div>' : '') +
       (hd ? '<div><span class="muted">ส่วนลดร้าน</span><span>-' + money(hd) + '</span></div>' : '') +
