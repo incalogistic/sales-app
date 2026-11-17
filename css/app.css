@@ -147,3 +147,21 @@ nav#tabs button.mid.on{color:var(--brown);font-weight:700}
 .sellbar .sbTot{font-size:20px;font-weight:700;color:var(--dark)}
 .sellbar .btn{height:50px;padding:0 16px;font-size:15px}
 .rows .li{margin-bottom:6px}
+/* v12.1 */
+.sticky{box-shadow:0 8px 10px -8px rgba(15,23,42,.18);margin:0 -14px 10px;padding:6px 14px 8px}
+.acts{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.acts .btn,a.btn{display:flex;align-items:center;justify-content:center;gap:6px;text-decoration:none;color:var(--dark)}
+.acts .btn[aria-disabled]{color:var(--muted);background:var(--cream);font-weight:500}
+.btn svg{flex:none}
+.btn.block{display:flex;align-items:center;justify-content:center;gap:6px}
+.vrow{padding:0;gap:0;overflow:hidden}
+.vmain{flex:1;text-align:left;background:none;border:0;padding:11px 12px;cursor:pointer;font:inherit;color:inherit;min-width:0}
+.ibtn{width:46px;align-self:stretch;display:flex;align-items:center;justify-content:center;color:var(--brown);border-left:1px solid var(--line);text-decoration:none}
+.ibtn:active{background:var(--soft)}
+.qtag{font-weight:700;color:var(--dark);background:var(--soft);border-radius:10px;padding:4px 10px;white-space:nowrap;font-size:13px}
+.hero.sm{padding:12px 16px}.hero.sm .amt{font-size:24px}
+details.more summary{cursor:pointer;font-weight:600;color:var(--muted);list-style:none}
+details.more summary::-webkit-details-marker{display:none}
+details.more summary:after{content:' ▾'}
+details.more[open] summary:after{content:' ▴'}
+.hero .lbl,.card.target .small,.qk span,.li .small{font-size:13px}
