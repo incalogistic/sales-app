@@ -26,7 +26,7 @@
   function qfmt(n) { n = num(n); return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''); }
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
   function ymd(d) { d = d || new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
-  function today() { return (S.boot && S.boot.today) || ymd(); }
+  function today() { var d = ymd(), b = S.boot && S.boot.today; return b && b > d ? b : d; }
   function monthStart() { return today().substring(0, 8) + '01'; }
   function thDate(s) {
     if (!s) return '';
@@ -53,7 +53,7 @@
     ERR_LOGIN_FAILED: 'User หรือ PIN ไม่ถูกต้อง', ERR_LOCKED: 'บัญชีถูกล็อกชั่วคราว ลองใหม่ภายหลังหรือติดต่อแอดมิน',
     ERR_SESSION_EXPIRED: 'หมดเวลาการใช้งาน กรุณาเข้าระบบใหม่', ERR_NO_PERMISSION: 'ไม่มีสิทธิ์ทำรายการนี้',
     ERR_CHANNEL_WEB_ONLY: 'ตำแหน่งนี้ใช้ได้เฉพาะเว็บหลังบ้าน', ERR_MUST_CHANGE_PIN: 'กรุณาตั้ง PIN ใหม่ก่อนใช้งาน',
-    ERR_PIN_RULE: 'PIN ต้องเป็นตัวเลข 6 หลัก', ERR_PIN_WEAK: 'PIN ง่ายเกินไป (เช่น 111111, 123456) กรุณาตั้งใหม่',
+    ERR_STORAGE_FULL: 'พื้นที่ในเครื่องเต็ม บันทึกรายการไว้ไม่ได้ — ต่อสัญญาณแล้วส่งรายการที่ค้างก่อน', ERR_PIN_RULE: 'PIN ต้องเป็นตัวเลข 6 หลัก', ERR_PIN_WEAK: 'PIN ง่ายเกินไป (เช่น 111111, 123456) กรุณาตั้งใหม่',
     ERR_OLD_PIN: 'PIN เดิมไม่ถูกต้อง', ERR_PIN_SAME: 'PIN ใหม่ต้องไม่ซ้ำ PIN เดิม',
     ERR_REPRINT_LIMIT: 'พิมพ์ใบเสร็จซ้ำครบจำนวนแล้ว กรุณาติดต่อแอดมิน', ERR_NETWORK: 'เชื่อมต่อระบบไม่ได้ ตรวจอินเทอร์เน็ตแล้วลองใหม่',
     ERR_NOT_ALLOWED: 'ระบบ DMS ยังไม่เปิดคำสั่งนี้ให้แอป (อัปเดต DMS เป็นเวอร์ชันล่าสุด)', ERR_BAD_REQUEST: 'คำขอไม่ถูกต้อง',
@@ -71,25 +71,329 @@
 
   // ---------------------------------------------------------------- API
   function api(fn) {
-    var args = Array.prototype.slice.call(arguments, 1);
+    var raw = Array.prototype.slice.call(arguments, 1), args = raw.slice();
     if (fn !== 'apiLogin' && fn !== 'apiPing' && fn !== 'apiLogo' && fn !== 'apiAppFind') args.unshift(S.token);
+    if ((fn === 'apiDocGet' || fn === 'apiCustomerGet') && isLocalId(raw[0])) {        // เอกสาร/ร้านที่ยังรอส่ง
+      var mp = outmapGet(raw[0].substring(2));
+      if (!mp) return Promise.resolve(fn === 'apiDocGet' ? localDocGet(raw[0]) : localCustGet(raw[0]));
+      raw[0] = mp.id; args[args.length - raw.length] = mp.id;
+    }
     busy(true);
+    var ctl = window.AbortController ? new AbortController() : null;
+    var tm = setTimeout(function () { if (ctl) ctl.abort(); }, CACHE_FNS[fn] ? 25000 : 60000);
     return fetch(S.url, {
-      method: 'POST', redirect: 'follow',
+      method: 'POST', redirect: 'follow', signal: ctl ? ctl.signal : undefined,
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // ไม่ทำ preflight → ใช้กับ Apps Script ได้
       body: JSON.stringify({ fn: fn, args: args })
     }).then(function (r) { return r.json(); }, function () { throw { code: 'ERR_NETWORK' }; })
       .then(function (j) {
-        busy(false);
+        clearTimeout(tm); busy(false); netOk();
         if (!j || j.ok !== true) {
           var err = { code: (j && j.code) || 'ERR_BAD_REQUEST', params: (j && j.params) || {} };
           if (err.code === 'ERR_SESSION_EXPIRED') { logout(true); }
           throw err;
         }
+        if (CACHE_FNS[fn]) cachePut(fn, raw, j.data);
         return j.data;
-      }, function (e) { busy(false); throw e && e.code ? e : { code: 'ERR_NETWORK' }; });
+      }, function (e) { clearTimeout(tm); busy(false); throw e && e.code ? e : { code: 'ERR_NETWORK' }; })
+      .catch(function (e) {
+        if (e && e.code === 'ERR_NETWORK') {
+          netDown();
+          var c = CACHE_FNS[fn] ? cacheGet(fn, raw) : null;
+          if (c) return c.d;
+          var fb = offlineFallback(fn, raw);
+          if (fb) return fb;
+        }
+        throw e;
+      })
+      .then(function (d) { return CACHE_FNS[fn] ? mergeLocal(fn, raw, d) : d; });
   }
   function fail(e) { toast(errText(e), true); }
+
+  // ================================================================ ทำงานตอนสัญญาณไม่ดี (ออฟไลน์)
+  // อ่านข้อมูล: เก็บผลล่าสุดไว้ในเครื่อง ถ้าเน็ตหลุดใช้ของในเครื่อง
+  // บันทึกข้อมูล: ส่งไม่ได้ → เข้าคิวในเครื่อง (outbox) ส่งเองเมื่อมีสัญญาณ · ทุกรายการมีรหัสอ้างอิง (ClientRef) กันบันทึกซ้ำ
+  var CACHE_FNS = { apiProductCatalog: 1, apiPartyList: 1, apiLookups: 1, apiGeo: 1, apiStockOnHand: 1, apiAppHome: 1, apiCollectPending: 1,
+                    apiDocList: 1, apiDocGet: 1, apiCustomerGet: 1, apiCustomerList: 1 };
+  var KEEP_FNS = { apiProductCatalog: 1, apiPartyList: 1, apiLookups: 1, apiGeo: 1, apiStockOnHand: 1, apiCollectPending: 1, apiAppHome: 1 };
+  function myId() { return S.boot && S.boot.user ? S.boot.user.UserId : ''; }
+  function hashStr(t) { var h = 5381; for (var i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0; return (h >>> 0).toString(36); }
+  function ckey(fn, raw) { return 'c.' + hashStr(S.url || '') + '.' + myId() + '.' + fn + '.' + hashStr(JSON.stringify(raw)); }
+  function jget(k, def) { try { var v = LS.get(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } }
+  function jset(k, v) { try { localStorage.setItem('ks.' + k, JSON.stringify(v)); return true; } catch (e) { return false; } }
+  function cacheGet(fn, raw) { var c = jget(ckey(fn, raw), null); return c ? { at: c.at, d: JSON.parse(JSON.stringify(c.d)) } : null; }
+  function cachePut(fn, raw, data) {
+    var k = ckey(fn, raw), idx = jget('cidx', []).filter(function (x) { return x[0] !== k; });
+    idx.push([k, KEEP_FNS[fn] ? 1 : 0]);
+    var drop = function (n) {
+      var loose = idx.filter(function (x) { return !x[1]; });
+      while (loose.length > n) { var o = loose.shift(); LS.del(o[0]); idx = idx.filter(function (x) { return x[0] !== o[0]; }); }
+    };
+    drop(60);
+    if (!jset(k, { at: Date.now(), d: data })) { drop(5); jset(k, { at: Date.now(), d: data }); }   // พื้นที่เต็ม → ลบของเก่าแล้วลองใหม่
+    jset('cidx', idx);
+  }
+  /** ไม่มีสัญญาณ และไม่เคยเปิดหน้านี้ตอนมีสัญญาณ → ประกอบจากข้อมูลอื่นที่มีในเครื่อง */
+  function offlineFallback(fn, raw) {
+    if (fn === 'apiCustomerGet') {
+      var pl = S.parties || (cacheGet('apiPartyList', ['C', '']) || {}).d || [];
+      var c = pl.filter(function (x) { return x.id === raw[0]; })[0];
+      if (!c) return null;
+      return { CustomerId: c.id, Name: c.name, Address: c.address, Subdistrict: c.subdistrict, District: c.district, Province: c.province, Phone: c.phone,
+               PaymentType: c.paymentType, CreditDays: c.creditDays, Unpaid: c.unpaid, Status: 'ACTIVE', Lat: c.lat, Lng: c.lng, photos: [] };
+    }
+    if (fn === 'apiDocList' || fn === 'apiCustomerList') return { items: [], total: 0, page: 1 };
+    if (fn === 'apiCollectPending') return [];
+    return null;
+  }
+  function isLocalId(id) { return /^L:/.test(String(id || '')); }
+  function newRef() { return (S.boot.user.Username || 'U') + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+  // ----- คิวรอส่ง
+  function obAll() { return jget('outbox', []); }
+  function obSave(l) {
+    if (!jset('outbox', l)) { toast('พื้นที่ในเครื่องเต็ม บันทึกรายการรอส่งไม่ได้ กรุณาต่อสัญญาณแล้วส่งก่อน', true); return false; }
+    drawNet(); return true;
+  }
+  function obMine() { var u = myId(); return obAll().filter(function (x) { return x.uid === u && x.url === S.url; }); }
+  function obFind(ref) { return obMine().filter(function (x) { return x.ref === ref; })[0]; }
+  function obUpd(ref, patch) { var l = obAll(); l.forEach(function (x) { if (x.ref === ref) Object.assign(x, patch); }); obSave(l); }
+  function obRemove(ref) { obSave(obAll().filter(function (x) { return x.ref !== ref; })); }
+  function outmapGet(ref) { return jget('outmap', {})[ref] || null; }
+  function outmapSet(ref, v) {
+    var m = jget('outmap', {}); m[ref] = v;
+    var ks = Object.keys(m).sort(function (a, b) { return (m[a].at || 0) - (m[b].at || 0); });
+    while (ks.length > 300) delete m[ks.shift()];
+    jset('outmap', m);
+  }
+  function obAdd(fn, raw, meta) {
+    var it = { ref: meta.ref || newRef(), uid: myId(), url: S.url, fn: fn, args: raw, dep: meta.dep || '', kind: meta.kind || '', label: meta.label || '',
+               local: meta.local || null, at: stamp(), st: 'wait', err: '' };
+    if (raw[0] && typeof raw[0] === 'object' && raw[0].lines && !raw[0].OfflineAt) raw[0].OfflineAt = it.at;   // วันเวลาที่ทำรายการจริง
+    var l = obAll(); l.push(it);
+    if (!obSave(l)) throw { code: 'ERR_STORAGE_FULL' };
+    return it;
+  }
+  /** ส่งคำสั่งบันทึก: ส่งได้ → ผลจริง · ไม่มีสัญญาณ → เข้าคิว */
+  function send(fn, raw, meta) {
+    meta = meta || {};
+    if (meta.dep) {
+      var m = outmapGet(meta.dep);
+      if (!m) return Promise.resolve({ queued: true, item: obAdd(fn, raw, meta) });
+      raw = subst(raw, 'L:' + meta.dep, m.id); meta.dep = '';
+    }
+    return api.apply(null, [fn].concat(raw)).then(function (d) { return { data: d }; }, function (e) {
+      if (!e || e.code !== 'ERR_NETWORK') throw e;
+      return { queued: true, item: obAdd(fn, raw, meta) };
+    });
+  }
+  function subst(o, from, to) {
+    if (o === from) return to;
+    if (Array.isArray(o)) return o.map(function (x) { return subst(x, from, to); });
+    if (o && typeof o === 'object') { var r = {}; Object.keys(o).forEach(function (k) { r[k] = subst(o[k], from, to); }); return r; }
+    return o;
+  }
+  var FL = { busy: false, sent: 0 };
+  function flush() {
+    if (FL.busy || !S.token || !myId()) return Promise.resolve();
+    FL.busy = true; FL.sent = 0;
+    var end = function () {
+      FL.busy = false; drawNet();
+      if (FL.sent) {
+        toast('ส่งรายการที่ค้างไว้แล้ว ' + FL.sent + ' รายการ');
+        S.parties = null;
+        if (['home', 'bills', 'orders', 'stock', 'collectList', 'customers', 'outbox', 'bill'].indexOf(S.view.name) >= 0) render();
+      }
+    };
+    var step = function () {
+      var l = obMine(), it = l.filter(function (x) { return x.st === 'wait'; })[0];
+      if (!it) return end();
+      var raw = JSON.parse(JSON.stringify(it.args));
+      if (it.dep) {
+        var m = outmapGet(it.dep);
+        if (!m) {
+          var d = l.filter(function (x) { return x.ref === it.dep; })[0];
+          if (!d || d.st === 'err') { obUpd(it.ref, { st: 'err', err: 'รายการก่อนหน้าส่งไม่สำเร็จ' }); return step(); }
+          return end();
+        }
+        raw = subst(raw, 'L:' + it.dep, m.id);
+      }
+      return api.apply(null, [it.fn].concat(raw)).then(function (r) {
+        var id = r && typeof r === 'object' ? (r.DocId || r.CustomerId || '') : (typeof r === 'string' ? r : '');
+        outmapSet(it.ref, { id: id, no: (r && r.DocNo) || '', at: Date.now() });
+        obRemove(it.ref); FL.sent++;
+        return step();
+      }, function (e) {
+        if (!e || ['ERR_NETWORK', 'ERR_SESSION_EXPIRED', 'ERR_BUSY'].indexOf(e.code) >= 0) return end();
+        obUpd(it.ref, { st: 'err', err: errText(e) });
+        return step();
+      });
+    };
+    return Promise.resolve().then(step).catch(function () { FL.busy = false; drawNet(); });
+  }
+  function netDown() { if (!S.offline) { S.offline = true; drawNet(); } }
+  function netOk() { if (S.offline) { S.offline = false; drawNet(); setTimeout(flush, 500); } }
+  function drawNet() {
+    var top = $('#top'); if (!top) return;
+    var el = $('#net');
+    if (!el) { el = document.createElement('button'); el.id = 'net'; el.type = 'button'; top.parentNode.insertBefore(el, top.nextSibling); el.onclick = function () { if (S.token && S.view.name !== 'outbox') go('outbox'); }; }
+    var l = S.token ? obMine() : [], w = l.filter(function (x) { return x.st === 'wait'; }).length, er = l.length - w;
+    var msg = '';
+    if (S.offline) msg = '<b>ไม่มีสัญญาณ</b> · ใช้ข้อมูลในเครื่อง' + (w ? ' · รอส่ง ' + w + ' รายการ' : '');
+    else if (FL.busy && w) msg = 'กำลังส่งรายการที่ค้าง ' + w + ' รายการ…';
+    else if (w) msg = 'รอส่ง ' + w + ' รายการ — แตะเพื่อส่ง';
+    if (er) msg += (msg ? ' · ' : '') + '<b>ส่งไม่สำเร็จ ' + er + ' รายการ</b>';
+    el.className = (S.offline ? 'off' : '') + (er ? ' err' : '');
+    el.innerHTML = msg;
+    el.classList.toggle('hidden', !msg || !S.token || top.classList.contains('hidden'));
+  }
+  window.addEventListener('online', function () { setTimeout(flush, 1500); });
+  window.addEventListener('offline', netDown);
+  setInterval(function () { if (S.token && obMine().some(function (x) { return x.st === 'wait'; })) flush(); }, 45000);
+
+  // ----- เอกสาร/ร้านที่ยังรอส่ง (แสดงในแอปเหมือนเอกสารจริง)
+  function queuedCl() { return obMine().filter(function (x) { return x.kind === 'CL'; }); }
+  function clRefsTo(docId) { return queuedCl().some(function (x) { return x.local && x.local.inv === docId; }); }
+  function localDocs(type) { return obMine().filter(function (x) { return x.local && x.local.doc && (!type || x.kind === type); }); }
+  function localDocGet(id) {
+    var it = obFind(id.substring(2));
+    if (!it || !it.local) throw { code: 'ERR_NOT_FOUND' };
+    var r = JSON.parse(JSON.stringify(it.local));
+    r.doc.Status = it.st === 'err' ? 'QERR' : 'QUEUED';
+    r.doc.QueueError = it.err;
+    if (clRefsTo(id)) r.doc.PaymentStatus = 'COLLECTING';
+    return r;
+  }
+  function localCustGet(id) {
+    var it = obFind(id.substring(2));
+    if (!it) throw { code: 'ERR_NOT_FOUND' };
+    var c = JSON.parse(JSON.stringify(it.args[0]));
+    c.CustomerId = id; c.Status = 'QUEUED'; c.Unpaid = 0; c.photos = [];
+    return c;
+  }
+  function mergeLocal(fn, raw, d) {
+    var mine = S.token ? obMine() : [];
+    if (!mine.length || !d) return d;
+    d = JSON.parse(JSON.stringify(d));
+    var inv = localDocs('INV'), so = localDocs('SO');
+    if (fn === 'apiStockOnHand' && d.qty) {                                   // หักของที่ขายไปแล้วแต่ยังไม่ได้ส่ง
+      inv.forEach(function (x) { (x.local.items || []).forEach(function (i) { if (d.qty[i.ProductCode]) d.qty[i.ProductCode][0] = r2(num(d.qty[i.ProductCode][0]) - num(i.QtyBase)); }); });
+    } else if (fn === 'apiCollectPending') {
+      d = d.filter(function (x) { return !clRefsTo(x.DocId); }).concat(inv.filter(function (x) { return !clRefsTo('L:' + x.ref); }).map(function (x) {
+        var o = x.local.doc; return { DocId: o.DocId, DocNo: 'รอส่ง', DocDate: o.DocDate, PartyId: o.PartyId, PartyName: o.PartyName, NetTotal: o.NetTotal, PaymentType: o.PaymentType };
+      }));
+    } else if (fn === 'apiDocList' && d.items) {
+      var f = raw[0] || {};
+      d.items.forEach(function (x) { if (clRefsTo(x.DocId)) x.PaymentStatus = 'COLLECTING'; });
+      var add = (f.docType === 'INV' ? inv : f.docType === 'SO' ? so : []).filter(function (x) {
+        var o = x.local.doc;
+        return (!f.partyId || o.PartyId === f.partyId) && (!f.dateFrom || o.DocDate >= f.dateFrom) && (!f.dateTo || o.DocDate <= f.dateTo);
+      }).map(function (x) { var o = localDocGet('L:' + x.ref).doc; return o; });
+      d.items = add.reverse().concat(d.items);
+    } else if (fn === 'apiDocGet' && d.doc && clRefsTo(d.doc.DocId)) {
+      d.doc.PaymentStatus = 'COLLECTING';
+    } else if (fn === 'apiAppHome' && d.today) {
+      var mineDocs = isVan() ? inv : so, t = today(), sumT = 0, cntT = 0, sumM = 0;
+      mineDocs.forEach(function (x) {
+        var o = x.local.doc, ex = r2(num(o.NetTotal) - num(o.VatAmount));
+        if (o.DocDate === t) { sumT += ex; cntT++; (d.visits || []).forEach(function (v) { if (v.id === o.PartyId) v.sold = true; }); }
+        if (o.DocDate.substring(0, 7) === t.substring(0, 7)) sumM += ex;
+      });
+      d.today.total = r2(num(d.today.total) + sumT); d.today.count += cntT;
+      d.month.total = r2(num(d.month.total) + sumM);
+      if (d.month.target) { d.month.pct = Math.round(d.month.total / d.month.target * 100); d.month.perDay = d.month.daysLeft ? Math.max(d.month.target - d.month.total, 0) / d.month.daysLeft : 0; }
+    } else if (fn === 'apiCustomerList' && d.items && (raw[0] || {}).status === 'PENDING') {
+      d.items = mine.filter(function (x) { return x.kind === 'CUST'; }).map(function (x) {
+        var c = x.args[0]; return { CustomerId: 'L:' + x.ref, Name: c.Name, Subdistrict: c.Subdistrict, CreatedBy: myId(), Status: 'QUEUED' };
+      }).concat(d.items);
+    }
+    return d;
+  }
+
+  // ----- เข้าระบบตอนไม่มีสัญญาณ (ใช้ PIN ที่เคยเข้าสำเร็จในเครื่องนี้ ภายใน 3 วัน)
+  function pinHash(un, pin, salt) {
+    var t = salt + '|' + un + '|' + pin;
+    if (window.crypto && crypto.subtle && window.TextEncoder) {
+      return crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)).then(function (b) {
+        return Array.prototype.map.call(new Uint8Array(b), function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+      });
+    }
+    return Promise.resolve(hashStr(t) + hashStr(t + '#'));
+  }
+  function saveOffAuth(un, pin, token, boot) {
+    var salt = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    pinHash(un, pin, salt).then(function (h) { jset('offauth.' + un, { salt: salt, h: h, token: token, boot: boot, url: S.url, at: Date.now(), bad: 0 }); });
+  }
+  function offlineLogin(un, pin) {
+    var a = jget('offauth.' + un, null);
+    if (!a || Date.now() - a.at > 3 * 864e5 || (a.bad || 0) >= 5) return Promise.resolve(null);
+    return pinHash(un, pin, a.salt).then(function (h) {
+      if (h !== a.h) { a.bad = (a.bad || 0) + 1; jset('offauth.' + un, a); return null; }
+      a.bad = 0; jset('offauth.' + un, a);
+      return a;
+    });
+  }
+
+  // ----- คำนวณราคา/ส่วนลด Tier ในเครื่อง (ตรงกับหลังบ้าน priceSaleLines_) — ใช้ได้แม้ไม่มีสัญญาณ
+  /*PRICE_LOCAL_START*/
+  function priceLocal(lines, channel, catMap, promo) {
+    var N = function (n) { n = Number(n); return isFinite(n) ? n : 0; };
+    var R2 = function (n) { return Math.round((N(n) + Number.EPSILON) * 100) / 100; };
+    var RT = function (n, d) { var f = Math.pow(10, d); return Math.round((N(n) + Number.EPSILON) * f) / f; };
+    var B = function (v) { if (v === true) return true; var t = String(v).toUpperCase(); return t === 'TRUE' || t === '1' || t === 'YES' || t === 'Y'; };
+    var groupOf = (promo && promo.groupOf) || {}, pg = (promo && promo.groups) || {};
+    var out = [];
+    lines.forEach(function (ln) {
+      var p = catMap[String(ln.ProductCode)];
+      if (!p) throw { code: 'ERR_PRODUCT_NOT_FOUND', params: { code: ln.ProductCode } };
+      var unit = (p.units || []).filter(function (u) { return u.Unit === String(ln.Unit); })[0];
+      if (!unit) throw { code: 'ERR_UNIT_NOT_FOUND', params: { code: p.ProductCode, unit: ln.Unit } };
+      var qty = N(ln.Qty), isFree = B(ln.IsFree) || B(p.IsPremium), factor = N(unit.Factor), caseQty = N(p.CaseQty);
+      var qtyBase = RT(qty * factor, 6);
+      out.push({ ProductCode: p.ProductCode, ProductName: p.NameTh, Unit: unit.Unit, UnitFactor: factor, Qty: qty, QtyBase: qtyBase,
+                 UnitPrice: RT(isFree ? 0 : N(p.PricePerCase) * factor / caseQty, 4), GrossAmount: isFree ? 0 : R2(N(p.PricePerCase) * qtyBase / caseQty),
+                 IsFree: isFree, CaseQty: caseQty, PromoGroupId: (!isFree && promo && groupOf[p.ProductCode]) ? groupOf[p.ProductCode] : '',
+                 TierMinCases: '', AutoDiscountPct: 0, DiscountType: 'PCT', DiscountValue: 0, DiscountAmount: 0, LineTotal: 0 });
+    });
+    var groups = {}, summary = [];
+    out.forEach(function (l) {
+      if (!l.PromoGroupId) return;
+      var g = groups[l.PromoGroupId] || (groups[l.PromoGroupId] = { pools: {} });
+      g.pools[l.CaseQty] = (g.pools[l.CaseQty] || 0) + l.QtyBase;
+    });
+    Object.keys(groups).forEach(function (gid) {
+      var g = groups[gid], cases = 0;
+      Object.keys(g.pools).forEach(function (size) { cases += Math.floor(RT(g.pools[size] / Number(size), 6)); });
+      var tiers = (pg[gid] && pg[gid].tiers[channel]) || [], tier = null, next = null;
+      tiers.forEach(function (t) { if (cases >= t.MinCases) tier = t; else if (!next) next = t; });
+      g.tier = tier;
+      summary.push({ GroupId: gid, GroupName: pg[gid] ? pg[gid].GroupName : gid, Cases: cases, Tier: tier, NextTier: next, CasesToNext: next ? next.MinCases - cases : 0 });
+    });
+    out.forEach(function (l) {
+      var g = l.PromoGroupId ? groups[l.PromoGroupId] : null;
+      if (g && g.tier) { l.TierMinCases = g.tier.MinCases; if (g.tier.DiscountType === 'PCT') l.AutoDiscountPct = g.tier.DiscountValue; }
+      if (!l.IsFree && g && g.tier) {
+        if (g.tier.DiscountType === 'PCT') { l.DiscountType = 'PCT'; l.DiscountValue = g.tier.DiscountValue; l.DiscountAmount = R2(l.GrossAmount * g.tier.DiscountValue / 100); }
+        else { l.DiscountType = 'BAHT'; l.DiscountAmount = R2(g.tier.DiscountValue * l.QtyBase / l.CaseQty); l.DiscountValue = l.DiscountAmount; }
+      }
+      if (l.DiscountAmount > l.GrossAmount) l.DiscountAmount = l.GrossAmount;
+      l.LineTotal = R2(l.GrossAmount - l.DiscountAmount);
+    });
+    return { lines: out, groups: summary };
+  }
+  /*PRICE_LOCAL_END*/
+  /** ยอดท้ายบิลแบบเดียวกับหลังบ้าน: ส่วนลดประจำร้าน + VAT */
+  function billTotals(pv, party) {
+    var R2 = function (n) { return Math.round((num(n) + Number.EPSILON) * 100) / 100; };
+    var sub = 0, ld = 0, after = 0;
+    (pv && pv.lines || []).forEach(function (l) { sub += num(l.GrossAmount); ld += num(l.DiscountAmount); after += num(l.LineTotal); });
+    sub = R2(sub); ld = R2(ld); after = R2(after);
+    var hdPct = Math.min(num(party && party.discountRate), 100), hd = Math.min(R2(after * hdPct / 100), after), net = R2(after - hd);
+    var st = (S.boot && S.boot.settings) || {}, vt = party && party.isTaxable === false ? 'NONE' : (['EX', 'IN', 'NONE'].indexOf(st.DEFAULT_VAT_TYPE) >= 0 ? st.DEFAULT_VAT_TYPE : 'EX');
+    var rate = vt === 'NONE' ? 0 : vatRate(), vat = 0, total = net;
+    if (vt === 'EX') { vat = R2(net * rate / 100); total = R2(net + vat); } else if (vt === 'IN') { vat = R2(net * rate / (100 + rate)); }
+    return { sub: sub, lineDisc: ld, after: after, hdPct: hdPct, hd: hd, net: net, vatType: vt, rate: rate, vat: vat, total: total };
+  }
 
   // ---------------------------------------------------------------- หาแบรนด์ของ User (ไม่ต้องใส่ลิงก์เอง)
   function brands() { return (window.DMS_BRANDS || []).filter(function (b) { return b && /^(https:\/\/|http:\/\/localhost)/.test(b.url || ''); }); }
@@ -165,6 +469,7 @@
       $('#who').textContent = isVan() ? 'แวน ' + u0.Username : (u0.RoleCode === 'PRE' ? 'พรีเซลล์' : (u0.RoleNameTh || u0.Username));
       drawTabs();
     }
+    drawNet();
     Promise.resolve(v.render(main, S.view.params)).catch(function (e) {
       main.innerHTML = '<div class="warn">' + esc(errText(e)) + '</div><div style="height:10px"></div><button class="btn block" id="retry">ลองใหม่</button>';
       var b = $('#retry'); if (b) b.onclick = render;
@@ -225,6 +530,7 @@
     if (S.cat && !force) return Promise.resolve(S.cat);
     return api('apiProductCatalog', today()).then(function (c) {
       S.cat = c.products || [];
+      S.promo = c.promo || null;
       S.catMap = {};
       S.cat.forEach(function (p) {
         p.units = (p.units || []).slice().sort(function (a, b) { return num(b.Factor) - num(a.Factor); });
@@ -347,8 +653,20 @@
           S.token = r.token; S.boot = r.boot;
           LS.set('token', r.token);
           if (r.boot.user.MustChangePwd) { S.view = { name: 'changePin', params: { forced: true } }; render(); return; }
+          saveOffAuth(un, pin, r.token, r.boot);
           start();
-        }).catch(function (e) { pin = ''; dots(); if (e && e.code !== 'ERR_CANCEL') fail(e); });
+        }).catch(function (e) {
+          var p0 = pin; pin = ''; dots();
+          if (!e || e.code === 'ERR_CANCEL') return;
+          if (e.code !== 'ERR_NETWORK') { fail(e); return; }
+          var had = !!jget('offauth.' + un, null);
+          offlineLogin(un, p0).then(function (a) {
+            if (!a) { toast(had ? 'ไม่มีสัญญาณ และ PIN ไม่ตรงกับที่เคยเข้าในเครื่องนี้' : 'ไม่มีสัญญาณ — ต้องเข้าระบบแบบมีสัญญาณในเครื่องนี้ก่อนอย่างน้อย 1 ครั้ง', true); return; }
+            S.url = a.url; S.token = a.token; S.boot = a.boot; S.offline = true;
+            toast('ไม่มีสัญญาณ — เข้าแบบออฟไลน์ ใช้ข้อมูลล่าสุดในเครื่อง');
+            start();
+          });
+        });
       };
       $$('[data-k]').forEach(function (b) {
         b.onclick = function () {
@@ -382,8 +700,41 @@
         api('apiChangePin', a, b).then(function () {
           toast('ตั้ง PIN ใหม่เรียบร้อย');
           return api('apiMe');
-        }).then(function (boot) { S.boot = boot; if (p.forced) start(); else back(); }).catch(fail);
+        }).then(function (boot) { S.boot = boot; saveOffAuth(boot.user.Username, b, S.token, boot); if (p.forced) start(); else back(); }).catch(fail);
       };
+    }
+  };
+
+  // ---------------------------------------------------------------- รายการรอส่ง (ออฟไลน์)
+  VIEWS.outbox = {
+    shell: true, title: 'รายการรอส่ง',
+    render: function (el) {
+      var l = obMine();
+      var w = l.filter(function (x) { return x.st === 'wait'; }).length;
+      el.innerHTML = '<div class="stack"><div class="hint">' + (S.offline ? '<b>ตอนนี้ไม่มีสัญญาณ</b> — ' : '') +
+        'รายการที่บันทึกตอนไม่มีสัญญาณจะเก็บไว้ในเครื่อง และส่งให้เองเมื่อมีสัญญาณ (ไม่ต้องกดซ้ำ) · อย่าล้างข้อมูลแอปหรือถอนการติดตั้งก่อนส่งเสร็จ</div>' +
+        (w ? '<button class="btn pri block" id="sendNow" type="button">ส่งตอนนี้ (' + w + ' รายการ)</button>' : '') +
+        (l.length ? '<div class="rows">' + l.map(function (x) {
+          var open = x.local && x.local.doc ? 'L:' + x.ref : (x.kind === 'CUST' ? 'C:L:' + x.ref : '');
+          return '<div class="li ob"><div class="grow"' + (open ? ' data-open="' + esc(open) + '"' : '') + '><b>' + esc(x.label || x.fn) + '</b><div class="muted small">บันทึกเมื่อ ' + esc(thDateTime(x.at)) + '</div>' +
+            (x.st === 'err' ? '<div class="small t-r">' + esc(x.err) + '</div>' : '') + '</div>' +
+            (x.st === 'err' ? '<div class="obact"><button class="btn sm" data-retry="' + esc(x.ref) + '" type="button">ลองใหม่</button><button class="btn sm" data-del="' + esc(x.ref) + '" type="button">ลบ</button></div>'
+              : '<span class="chip a">รอส่ง</span>') + '</div>';
+        }).join('') + '</div>' : '<div class="ok">ไม่มีรายการค้างส่ง — ข้อมูลส่งเข้าระบบครบแล้ว</div>') + '</div>';
+      if ($('#sendNow')) $('#sendNow').onclick = function () { toast('กำลังส่ง…'); flush().then(function () { if (S.view.name === 'outbox') render(); }); };
+      $$('[data-open]').forEach(function (b) { b.onclick = function () { var o = b.getAttribute('data-open'); if (o.indexOf('C:') === 0) go('customer', { id: o.substring(2) }); else go('bill', { id: o }); }; });
+      $$('[data-retry]').forEach(function (b) { b.onclick = function () {
+        var ref = b.getAttribute('data-retry'), all = obAll();
+        all.forEach(function (x) { if (x.ref === ref || (x.dep === ref && x.st === 'err')) { x.st = 'wait'; x.err = ''; } });
+        obSave(all); flush().then(function () { if (S.view.name === 'outbox') render(); });
+      }; });
+      $$('[data-del]').forEach(function (b) { b.onclick = function () {
+        var ref = b.getAttribute('data-del');
+        confirmBox('ลบรายการนี้', 'ลบรายการที่ส่งไม่สำเร็จออกจากเครื่อง? <br><span style="color:var(--red)">ข้อมูลรายการนี้ (และรายการที่ต่อจากมัน เช่น รับชำระของบิลนี้) จะหายไป ไม่ถูกส่งเข้าระบบ</span>', 'ลบ').then(function (y) {
+          if (!y) return;
+          obSave(obAll().filter(function (x) { return x.ref !== ref && x.dep !== ref; })); render();
+        });
+      }; });
     }
   };
 
@@ -443,8 +794,8 @@
     shell: true, title: 'เมนู',
     render: function (el) {
       var items = isVan()
-        ? [['loadReq', 'ขอโหลดสินค้าขึ้นรถ'], ['returnReq', 'ขอคืนสินค้าจากรถ'], ['daySummary', 'สรุปยอดขายวันนี้'], ['collectList', 'รับชำระเงิน'], ['newCustomer', 'เปิดร้านค้าใหม่'], ['customers', 'ลูกค้า']]
-        : [['newCustomer', 'เปิดร้านค้าใหม่'], ['customers', 'ลูกค้าที่ดูแล']];
+        ? [['loadReq', 'ขอโหลดสินค้าขึ้นรถ'], ['returnReq', 'ขอคืนสินค้าจากรถ'], ['daySummary', 'สรุปยอดขายวันนี้'], ['collectList', 'รับชำระเงิน'], ['newCustomer', 'เปิดร้านค้าใหม่'], ['customers', 'ลูกค้า'], ['outbox', 'รายการรอส่ง (ออฟไลน์)']]
+        : [['newCustomer', 'เปิดร้านค้าใหม่'], ['customers', 'ลูกค้าที่ดูแล'], ['outbox', 'รายการรอส่ง (ออฟไลน์)']];
       el.innerHTML = '<div class="list">' + items.map(function (i) { return '<div class="it" data-go="' + i[0] + '">' + esc(i[1]) + '</div>'; }).join('') +
         '<div class="it" data-go="changePin">เปลี่ยน PIN</div><div class="it" id="refresh">โหลดข้อมูลสินค้า/ลูกค้าใหม่</div>' +
         '<div class="it" id="out" style="color:var(--red)">ออกจากระบบ</div></div>' +
@@ -487,7 +838,7 @@
         if (!l.length || !$('#pend')) return;
         $('#pend').innerHTML = '<div class="sec">คำขอเปิดร้านของฉัน · รอแอดมินอนุมัติ ' + l.length + ' ร้าน</div><div class="rows">' + l.map(function (c) {
           return '<button type="button" class="li" data-pc="' + esc(c.CustomerId) + '"><div class="grow"><b>' + esc(c.Name) + '</b><div class="muted small">รหัสร่าง ' + esc(c.CustomerId) +
-            (c.Subdistrict ? ' · ' + esc(c.Subdistrict) : '') + '</div></div><span class="chip a">รออนุมัติ</span></button>';
+            (c.Subdistrict ? ' · ' + esc(c.Subdistrict) : '') + '</div></div><span class="chip a">' + (c.Status === 'QUEUED' ? 'รอส่ง' : 'รออนุมัติ') + '</span></button>';
         }).join('') + '</div>';
         $$('[data-pc]').forEach(function (b) { b.onclick = function () { go('customer', { id: b.getAttribute('data-pc') }); }; });
       }).catch(function () { });
@@ -512,14 +863,15 @@
         var addr = [c.Address, place, c.Province && 'จ.' + c.Province].filter(Boolean).join(' ');
         var pos = TRK.pos, d = pos && c.Lat ? distKm(pos.lat, pos.lng, +c.Lat, +c.Lng) : null;
         el.innerHTML = '<div class="stack"><div class="card"><div class="between" style="align-items:flex-start"><div class="grow"><div class="b" style="font-size:17px">' + esc(c.Name) + '</div>' +
-          '<div class="muted small">' + esc(c.CustomerId) + (c.Status === 'PENDING' ? ' · <span class="chip a">รออนุมัติ</span>' : '') + (d !== null ? ' · ห่าง ' + distText(d) : '') + '</div></div></div>' +
+          '<div class="muted small">' + (c.Status === 'QUEUED' ? 'ยังไม่มีรหัส' : esc(c.CustomerId)) + (c.Status === 'PENDING' ? ' · <span class="chip a">รออนุมัติ</span>' : c.Status === 'QUEUED' ? ' · <span class="chip a">รอส่ง</span>' : '') + (d !== null ? ' · ห่าง ' + distText(d) : '') + '</div></div></div>' +
           '<div class="small" style="margin-top:6px">' + esc(addr || '-') + '</div>' +
           '<div class="chips" style="margin-top:8px">' + (c.Unpaid > 0 ? '<span class="chip r">ค้างชำระ ฿' + money(c.Unpaid) + '</span>' : '<span class="chip g">ไม่มียอดค้าง</span>') +
           '<span class="chip">' + (c.PaymentType === 'CREDIT' ? 'เครดิต ' + esc(c.CreditDays || 0) + ' วัน' : 'เงินสด') + '</span></div>' +
           '<div class="acts">' + (c.Phone ? '<a class="btn" href="' + esc(telUrl(c.Phone)) + '">' + ic('phone', 18) + ' โทร</a>' : '<span class="btn" aria-disabled="true">ไม่มีเบอร์</span>') +
           (c.Lat ? '<a class="btn" target="_blank" rel="noopener" href="' + esc(mapsUrl(c.Lat, c.Lng)) + '">' + ic('nav', 18) + ' นำทาง</a>' : '<span class="btn" aria-disabled="true">ยังไม่มีพิกัด</span>') + '</div></div>' +
           '<div id="visitBox"></div>' +
-          (c.Status === 'PENDING' ? '<div class="alert">ร้านนี้รอแอดมินอนุมัติ — อนุมัติแล้วจะได้รหัสร้านจริงและเริ่มขายได้</div>' :
+          (c.Status === 'QUEUED' ? '<div class="alert">คำขอเปิดร้านนี้บันทึกไว้ในเครื่อง ยังไม่ได้ส่ง — ระบบจะส่งให้แอดมินเองเมื่อมีสัญญาณ</div>' :
+           c.Status === 'PENDING' ? '<div class="alert">ร้านนี้รอแอดมินอนุมัติ — อนุมัติแล้วจะได้รหัสร้านจริงและเริ่มขายได้</div>' :
           '<button class="btn pri block" id="sell" type="button">' + (isVan() ? 'ขายร้านนี้' : 'สั่งขายร้านนี้') + '</button>' +
           '<button class="btn block" id="rep" type="button">' + ic('repeat', 18) + ' สั่งเหมือนครั้งก่อน</button>') +
           '<div class="card"><div class="sec" style="margin-top:0">' + (isVan() ? 'บิลวันนี้' : 'ออเดอร์เดือนนี้') + '</div><div id="h" class="small muted">กำลังโหลด…</div></div>' +
@@ -536,7 +888,7 @@
           if ($('#vOut')) $('#vOut').onclick = function () { visitOut(); toast('เช็คเอาท์แล้ว'); drawVisit(); };
         };
         drawVisit();
-        if (c.Status === 'PENDING') { $('#visitBox').innerHTML = ''; }
+        if (c.Status === 'PENDING' || c.Status === 'QUEUED') { $('#visitBox').innerHTML = ''; if (c.Status === 'QUEUED') $('#h').innerHTML = '-'; }
         if ($('#sell')) $('#sell').onclick = function () { go('sell', { party: c.CustomerId }); };
         if ($('#rep')) $('#rep').onclick = function () { go('sell', { party: c.CustomerId, repeat: true }); };
         $('#gps').onclick = function () {
@@ -544,9 +896,10 @@
             var dd = c.Lat ? distKm(+g.lat, +g.lng, +c.Lat, +c.Lng) : null;
             return confirmBox('บันทึกพิกัดร้าน', 'บันทึกพิกัดร้าน <b>' + esc(c.Name) + '</b> เป็น ' + esc(g.lat + ', ' + g.lng) + '?' +
               (dd !== null ? '<br>ห่างจากพิกัดเดิม <b>' + distText(dd) + '</b>' : '') + '<br><span style="color:var(--red)">ต้องยืนอยู่หน้าร้านเท่านั้น</span>', 'บันทึก')
-              .then(function (y) { if (y) return api('apiCustomerSetGps', c.CustomerId, g.lat, g.lng).then(function () { toast('บันทึกพิกัดแล้ว'); }); });
+              .then(function (y) { if (y) return send('apiCustomerSetGps', [c.CustomerId, g.lat, g.lng], { kind: 'GPS', label: 'พิกัดร้าน ' + c.Name }).then(function (r) { toast(r.queued ? 'บันทึกพิกัดไว้ในเครื่อง จะส่งเมื่อมีสัญญาณ' : 'บันทึกพิกัดแล้ว'); }); });
           }).catch(function (e) { fail(e.code ? e : { code: e.message || e }); });
         };
+        if (c.Status === 'QUEUED') { var mo = $('details.more'); if (mo) mo.remove(); return; }
         return docs({ partyId: c.CustomerId, docType: isVan() ? 'INV' : 'SO', dateFrom: isVan() ? today() : monthStart(), dateTo: today() }).then(function (l) {
           $('#h').innerHTML = l.length ? l.slice(0, 20).map(docRow).join('') : 'ยังไม่มีรายการ';
           bindDocRows();
@@ -655,12 +1008,15 @@
           if (!st.gps) { toast('กรุณาปักหมุดตำแหน่งร้าน', true); return; }
           if (!st.photo) { toast('กรุณาถ่ายรูปหน้าร้าน', true); return; }
           v.Lat = st.gps.lat; v.Lng = st.gps.lng; v.BranchType = 'HQ';
-          var cid;
-          api('apiCustomerSave', v, {}).then(function (r) {
-            cid = r.CustomerId || (r.customer && r.customer.CustomerId) || r.id || r;
-            return api('apiCustomerPhotoUpload', cid, st.photo.split(',')[1], 'image/jpeg', st.gps.lat, st.gps.lng, 'หน้าร้าน (เปิดร้านใหม่)');
+          var cref = newRef(), queued = false;
+          v.ClientRef = cref;
+          send('apiCustomerSave', [v, {}], { ref: cref, kind: 'CUST', label: 'ขอเปิดร้าน ' + v.Name }).then(function (r) {
+            queued = !!r.queued;
+            var cid = queued ? 'L:' + cref : r.data.CustomerId;
+            return send('apiCustomerPhotoUpload', [cid, st.photo.split(',')[1], 'image/jpeg', st.gps.lat, st.gps.lng, 'หน้าร้าน (เปิดร้านใหม่)'],
+              { kind: 'UPLOAD', dep: queued ? cref : '', label: 'รูปหน้าร้าน ' + v.Name }).then(function (u) { if (u.queued) queued = true; });
           }).then(function () {
-            toast('ส่งขอเปิดร้านแล้ว รอแอดมินอนุมัติ');
+            toast(queued ? 'บันทึกคำขอเปิดร้านไว้ในเครื่องแล้ว จะส่งให้แอดมินเองเมื่อมีสัญญาณ' : 'ส่งขอเปิดร้านแล้ว รอแอดมินอนุมัติ');
             S.parties = null;
             back();
           }).catch(fail);
@@ -788,22 +1144,24 @@
         var price = debounce(function () {
           var ls = lines();
           if (!ls.length) { cart.preview = null; draw(); return; }
-          api('apiPricePreview', { lines: ls, docDate: today(), channel: party.tierChannel }).then(function (pv) { cart.preview = pv; draw(); }).catch(fail);
-        }, 350);
+          try { cart.preview = priceLocal(ls, party.tierChannel || (isVan() ? 'VAN' : 'PRE'), S.catMap, S.promo); }
+          catch (e) { cart.preview = null; fail(e); }
+          draw();
+        }, 60);
         var drawTotals = function () {
-          var pv = cart.preview, sub = 0, disc = 0, net = 0;
-          (pv && pv.lines || []).forEach(function (l) { sub += num(l.GrossAmount); disc += num(l.DiscountAmount); net += num(l.LineTotal); });
-          var vat = r2(net * vatRate() / 100);
+          var pv = cart.preview, bt = billTotals(pv, party), disc = r2(bt.lineDisc + bt.hd);
           $('#groups').innerHTML = (pv && pv.groups && pv.groups.length) ? '<div class="tierbox"><div class="muted small">ส่วนลด Tier' + (isVan() ? ' · ตารางแวน' : '') + '</div>' + pv.groups.map(function (g) {
             return '<div class="between"><b>' + esc(g.GroupName) + '</b><b>' + qfmt(g.Cases) + ' หีบ → ' + esc(g.Tier ? g.Tier.DiscountValue : 0) + '%</b></div>' +
               '<div class="muted small">' + (g.NextTier ? 'อีก ' + qfmt(g.CasesToNext) + ' หีบ ได้ ' + esc(g.NextTier.DiscountValue) + '%' : 'ได้ขั้นสูงสุดแล้ว') + '</div>';
           }).join('') + '</div>' : '';
           var nItems = cart.items.filter(function (i) { return i.base > 0; }).length;
           $('#sbInfo').textContent = nItems + ' รายการ' + (disc ? ' · ส่วนลดโปร ' + money(disc) : '');
-          $('#sbTot').textContent = '฿' + money(net + vat);
-          $('#tot').innerHTML = '<div><span class="muted">รวมราคาสินค้า</span><span>' + money(sub) + '</span></div><div><span class="muted">ส่วนลด</span><span>-' + money(disc) + '</span></div>' +
-            '<div><span class="muted">ก่อนภาษีมูลค่าเพิ่ม</span><span>' + money(net) + '</span></div><div><span class="muted">VAT ' + vatRate() + '%</span><span>' + money(vat) + '</span></div>' +
-            '<div class="grand"><span>รวมทั้งสิ้น</span><span>' + money(net + vat) + '</span></div>';
+          $('#sbTot').textContent = '฿' + money(bt.total);
+          $('#tot').innerHTML = '<div><span class="muted">รวมราคาสินค้า</span><span>' + money(bt.sub) + '</span></div><div><span class="muted">ส่วนลดโปร</span><span>-' + money(bt.lineDisc) + '</span></div>' +
+            (bt.hd ? '<div><span class="muted">ส่วนลดร้าน ' + bt.hdPct + '%</span><span>-' + money(bt.hd) + '</span></div>' : '') +
+            '<div><span class="muted">' + (bt.vatType === 'IN' ? 'ยอดรวม VAT' : 'ก่อนภาษีมูลค่าเพิ่ม') + '</span><span>' + money(bt.net) + '</span></div>' +
+            (bt.vatType === 'NONE' ? '<div><span class="muted">ไม่คิด VAT</span><span>-</span></div>' : '<div><span class="muted">VAT ' + bt.rate + '%</span><span>' + money(bt.vat) + '</span></div>') +
+            '<div class="grand"><span>รวมทั้งสิ้น</span><span>' + money(bt.total) + '</span></div>';
         };
         var foot = function () {
           var f = $('#foot');
@@ -824,19 +1182,27 @@
         var submit = function () {
           var ls = lines();
           if (!ls.length) { toast('ยังไม่มีสินค้าในบิล', true); return; }
-          var net = (cart.preview && cart.preview.lines || []).reduce(function (s, l) { return s + num(l.LineTotal); }, 0);
-          var total = money(net * (1 + vatRate() / 100));
+          if (!cart.preview) { toast('คำนวณราคาไม่สำเร็จ ลองแก้จำนวนอีกครั้ง', true); return; }
+          var bt = billTotals(cart.preview, party), total = money(bt.total), ref = newRef();
           var doc = isVan()
             ? { DocType: 'INV', PartyId: party.id, PaymentType: cart.pay, lines: ls }
             : { DocType: 'SO', PartyId: party.id, DeliveryType: 'COMPANY', DeliveryDate: cart.delivery || $('#dd2').value, Note: cart.note, lines: ls };
+          doc.ClientRef = ref;
+          var now = stamp();
+          var local = { doc: { DocId: 'L:' + ref, DocNo: 'รอส่ง', DocType: doc.DocType, PartyId: party.id, PartyName: party.name, DocDate: now.substring(0, 10), DocTime: now.substring(11, 16),
+                               PaymentType: doc.PaymentType || '', PaymentStatus: 'UNPAID', SubTotal: bt.sub, AfterDiscount: bt.net, VatType: bt.vatType, VatAmount: bt.vat, NetTotal: bt.total },
+                        items: cart.preview.lines.map(function (l) { return { ProductCode: l.ProductCode, ProductName: l.ProductName, Qty: l.Qty, Unit: l.Unit, QtyBase: l.QtyBase, LineTotal: l.LineTotal, IsFree: l.IsFree }; }) };
           var msg = isVan() ? 'ออกบิลให้ <b>' + esc(party.name) + '</b> ยอด <b>' + total + '</b> บาท' :
             'ส่งออเดอร์ของ <b>' + esc(party.name) + '</b> ยอด <b>' + total + '</b> บาท<br><span style="color:var(--red)">ยืนยันแล้วจะยกเลิกเองไม่ได้ ต้องให้แอดมินยกเลิก</span>';
           confirmBox(isVan() ? 'ยืนยันออกบิล' : 'ยืนยันออเดอร์', msg, 'ยืนยัน').then(function (y) {
             if (!y) return;
-            api('apiDocSave', doc, { submit: true }).then(function (res) {
-              trk('ORDER_SAVE', { cid: party.id, did: res.DocId }); trkFlush();
+            send('apiDocSave', [doc, { submit: true }], { ref: ref, kind: doc.DocType, local: local,
+                 label: (isVan() ? 'บิลขาย ' : 'ใบสั่งขาย ') + party.name + ' ฿' + total }).then(function (sr) {
+              var res = sr.queued ? { DocId: 'L:' + ref, DocNo: 'รอส่ง' } : sr.data;
+              trk('ORDER_SAVE', { cid: party.id, did: sr.queued ? '' : res.DocId }); trkFlush();
               S.cart = null; S.parties = null;
-              toast((isVan() ? 'ออกบิล ' : 'ส่งออเดอร์ ') + res.DocNo + ' แล้ว');
+              if (sr.queued) toast('ไม่มีสัญญาณ — บันทึก' + (isVan() ? 'บิล' : 'ออเดอร์') + 'ไว้ในเครื่องแล้ว ระบบจะส่งให้เองเมื่อมีสัญญาณ');
+              else toast((isVan() ? 'ออกบิล ' : 'ส่งออเดอร์ ') + res.DocNo + ' แล้ว');
               S.stack = [{ name: 'home', params: {} }];
               S.view = isVan() ? { name: 'bill', params: { id: res.DocId, justSold: true } } : { name: 'bill', params: { id: res.DocId } };
               render();
@@ -851,7 +1217,7 @@
   };
 
   // ---------------------------------------------------------------- bills / orders
-  var STAT = { DRAFT: ['ร่าง', ''], PENDING: ['รออนุมัติ', 'a'], APPROVED: ['อนุมัติแล้ว', 'g'], REJECTED: ['ไม่อนุมัติ', 'r'], CANCELLED: ['ยกเลิก', 'r'], RETURNED: ['ส่งกลับแก้ไข', 'a'] };
+  var STAT = { QUEUED: ['รอส่ง (ยังไม่มีสัญญาณ)', 'a'], QERR: ['ส่งไม่สำเร็จ', 'r'], DRAFT: ['ร่าง', ''], PENDING: ['รออนุมัติ', 'a'], APPROVED: ['อนุมัติแล้ว', 'g'], REJECTED: ['ไม่อนุมัติ', 'r'], CANCELLED: ['ยกเลิก', 'r'], RETURNED: ['ส่งกลับแก้ไข', 'a'] };
   var PAY = { UNPAID: ['ยังไม่รับชำระ', 'r'], COLLECTING: ['รอบัญชียืนยันรับชำระ', 'a'], PARTIAL: ['ชำระบางส่วน', 'a'], PAID: ['ชำระแล้ว', 'g'] };
   function chip(map, k) { var x = map[k]; return x ? '<span class="chip ' + x[1] + '">' + x[0] + '</span>' : ''; }
   function docRow(d) {
@@ -887,7 +1253,7 @@
     render: function (el, p) {
       return api('apiDocGet', p.id).then(function (r) {
         var d = r.doc, items = r.items || [];
-        $('#title').textContent = d.DocNo;
+        $('#title').textContent = d.DocNo === 'รอส่ง' ? (d.DocType === 'SO' ? 'ออเดอร์รอส่ง' : 'บิลรอส่ง') : d.DocNo;
         var steps = d.DocType === 'SO'
           ? [['ส่งออเดอร์', true], ['แอดมินอนุมัติ', d.Status === 'APPROVED' || d.FulfillStatus], ['ออกใบกำกับ/ส่งของ', !!(r.children || []).length]]
           : [['ออกบิล', true], ['รับชำระจากร้าน', ['COLLECTING', 'PARTIAL', 'PAID'].indexOf(d.PaymentStatus) >= 0], ['บัญชียืนยันรับชำระ', d.PaymentStatus === 'PAID']];
@@ -908,7 +1274,23 @@
           if (!d.PaymentStatus || d.PaymentStatus === 'UNPAID') a += '<button class="btn grn block" id="col" type="button">รับชำระบิลนี้</button>';
           if (d.PaymentStatus === 'COLLECTING') a += '<div class="ok">รับชำระแล้ว รอบัญชียืนยัน — ไม่ต้องทำอะไรเพิ่ม</div>';
         }
+        if (d.Status === 'QUEUED' || d.Status === 'QERR') {
+          a += d.Status === 'QERR' ? '<div class="warn">ส่งไม่สำเร็จ: ' + esc(d.QueueError || '') + '<br><button class="btn" id="obq" type="button" style="margin-top:8px">ดูรายการรอส่ง</button></div>'
+            : '<div class="hint">ยังไม่มีสัญญาณ — ' + (d.DocType === 'SO' ? 'ออเดอร์' : 'บิล') + 'นี้บันทึกไว้ในเครื่อง ระบบจะส่งและออกเลขที่ให้เองเมื่อมีสัญญาณ</div>';
+          if (d.DocType === 'INV') {
+            a += '<button class="btn block" id="tmp" type="button">' + ic('print', 18) + ' พิมพ์ใบส่งสินค้าชั่วคราว</button>' +
+              '<p class="muted small c">ใบกำกับภาษีตัวจริงพิมพ์ได้เมื่อส่งบิลสำเร็จ (หน้าบิลวันนี้)</p>';
+            if (d.PaymentStatus !== 'COLLECTING') a += '<button class="btn grn block" id="col" type="button">รับชำระบิลนี้</button>';
+            else a += '<div class="ok">รับชำระแล้ว — จะส่งพร้อมบิลเมื่อมีสัญญาณ</div>';
+          }
+        }
         $('#acts').innerHTML = a;
+        if ($('#obq')) $('#obq').onclick = function () { go('outbox'); };
+        if ($('#tmp')) $('#tmp').onclick = function () {
+          printHtml(slipHtml('ใบส่งสินค้า (ชั่วคราว) — ยังไม่ใช่ใบกำกับภาษี', ['สินค้า', 'จำนวน', 'เงิน'], items.map(function (i) {
+            return [esc(i.ProductCode) + ' ' + esc(i.ProductName), qfmt(i.Qty) + ' ' + esc(i.Unit), money(i.LineTotal)];
+          }).concat([['<b>รวมทั้งสิ้น</b>', '', '<b>' + money(d.NetTotal) + '</b>'], ['ร้าน: ' + esc(d.PartyName), '', '']]), 'รอออกเลขที่'), 'temp_' + d.DocDate);
+        };
         if ($('#prt')) $('#prt').onclick = function () { printDoc(d.DocId).then(function () { render(); }); };
         if ($('#col')) $('#col').onclick = function () { go('collect', { invId: d.DocId }); };
         if (p.justSold && $('#prt')) { p.justSold = false; toast('แตะ "พิมพ์บิล" เพื่อพิมพ์ให้ร้าน แล้วรับชำระ'); }
@@ -952,11 +1334,20 @@
               pay.PayerName = $('#payer').value.trim(); pay.RefNo = $('#ref').value.trim();
               if (!st.slip) { toast('กรุณาแนบสลิปโอนเงิน', true); return; }
             }
-            api('apiCollectionSave', { PartyId: d.PartyId, lines: [{ Kind: 'INV', RefDocId: d.DocId, Amount: net }, pay] }, { submit: true }).then(function (cl) {
-              if (st.kind === 'QR' && st.slip) return api('apiDocUpload', cl.DocId, 'slip_' + d.DocNo + '.jpg', 'image/jpeg', st.slip.split(',')[1], 'SLIP').then(function () { return cl; });
-              return cl;
-            }).then(function (cl) {
-              toast('รับชำระแล้ว (' + cl.DocNo + ') รอบัญชียืนยัน');
+            var clref = newRef(), localInv = isLocalId(d.DocId);
+            var payload = { ClientRef: clref, PartyId: d.PartyId, lines: [{ Kind: 'INV', RefDocId: d.DocId, Amount: net }, pay] };
+            var queued = false;
+            send('apiCollectionSave', [payload, { submit: true }], { ref: clref, kind: 'CL', dep: localInv ? d.DocId.substring(2) : '',
+                 local: { inv: d.DocId }, label: 'รับชำระ ' + d.PartyName + ' ฿' + money(net) }).then(function (r) {
+              queued = !!r.queued;
+              var clId = queued ? 'L:' + clref : r.data.DocId;
+              if (st.kind === 'QR' && st.slip) {
+                return send('apiDocUpload', [clId, 'slip_' + clref + '.jpg', 'image/jpeg', st.slip.split(',')[1], 'SLIP'],
+                  { kind: 'UPLOAD', dep: queued ? clref : '', label: 'สลิปโอนเงิน ' + d.PartyName }).then(function (u) { if (u.queued) queued = true; return r; });
+              }
+              return r;
+            }).then(function (r) {
+              toast(queued ? 'บันทึกรับชำระไว้ในเครื่องแล้ว จะส่งให้เองเมื่อมีสัญญาณ' : 'รับชำระแล้ว (' + r.data.DocNo + ') รอบัญชียืนยัน');
               S.stack = [{ name: 'home', params: {} }]; S.view = { name: 'bill', params: { id: d.DocId } }; render();
             }).catch(fail);
           };
@@ -1032,8 +1423,10 @@
             if (!ls.length) { toast('ยังไม่ได้ใส่จำนวนสินค้า', true); return; }
             var wh = S.boot.user.VanWarehouseId;
             var doc = kind === 'VL' ? { DocType: 'VL', ToWarehouseId: wh, Reason: 'LOAD', lines: ls } : { DocType: 'VU', WarehouseId: wh, Reason: 'RETURN', lines: ls };
-            api('apiDocSave', doc, { submit: true }).then(function (r) {
-              toast('ส่งคำขอ ' + r.DocNo + ' แล้ว รอแอดมินอนุมัติ');
+            doc.ClientRef = newRef();
+            send('apiDocSave', [doc, { submit: true }], { ref: doc.ClientRef, kind: kind, label: (kind === 'VL' ? 'ขอโหลดสินค้า ' : 'ขอคืนสินค้า ') + ls.length + ' รายการ' }).then(function (sr) {
+              var r = sr.queued ? { DocNo: 'รอส่ง' } : sr.data;
+              toast(sr.queued ? 'ไม่มีสัญญาณ — บันทึกคำขอไว้ในเครื่องแล้ว จะส่งให้เองเมื่อมีสัญญาณ' : 'ส่งคำขอ ' + r.DocNo + ' แล้ว รอแอดมินอนุมัติ');
               printHtml(slipHtml(kind === 'VL' ? 'ใบขอโหลดสินค้า' : 'ใบขอคืนสินค้า', ['สินค้า', 'จำนวน'], ls.map(function (l) {
                 return [esc(l.ProductCode) + ' ' + esc(S.catMap[l.ProductCode].NameTh), l.Qty + ' ' + esc(l.Unit)];
               }), r.DocNo), r.DocNo, true);
@@ -1225,14 +1618,25 @@
     if (S.token && !expired) { visitOut(); trk('CLOSE'); trkFlush(true); api('apiLogout').catch(function () { }); }
     S.token = ''; S.boot = null; S.cat = null; S.parties = null; S.cart = null; S.stack = [];
     LS.del('token');
-    if (expired) toast(ERR.ERR_SESSION_EXPIRED, true);
+    if (expired) {
+      var wq = obAll().filter(function (x) { return x.st === 'wait'; }).length;
+      toast(ERR.ERR_SESSION_EXPIRED + (wq ? ' — มีรายการรอส่ง ' + wq + ' รายการ จะส่งให้หลังเข้าระบบ' : ''), true);
+    }
     S.view = { name: 'login', params: {} }; render();
   }
   function start() {
     S.stack = []; S.view = { name: 'home', params: {} };
     render();
-    loadCatalog().catch(function () { });
     trkStart();
+    // เตรียมข้อมูลไว้ในเครื่อง (ใช้ตอนไม่มีสัญญาณ) แล้วส่งรายการที่ค้าง
+    var u = S.boot.user, jobs = [function () { return loadCatalog(true); }, function () { return loadParties(true); }, loadLookups,
+      function () { return isVan() && u.VanWarehouseId ? api('apiStockOnHand', u.VanWarehouseId) : null; },
+      function () { return isVan() ? api('apiCollectPending') : null; }, loadGeo];
+    var i = 0, nextJob = function () {
+      if (i >= jobs.length || S.offline || !S.token) return flush();
+      return Promise.resolve().then(jobs[i++]).catch(function () { }).then(nextJob);
+    };
+    setTimeout(function () { if (!S.offline) nextJob(); drawNet(); }, 1500);
   }
   function boot() {
     $('#back').onclick = back;

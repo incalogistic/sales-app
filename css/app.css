@@ -165,3 +165,10 @@ details.more summary::-webkit-details-marker{display:none}
 details.more summary:after{content:' ▾'}
 details.more[open] summary:after{content:' ▴'}
 .hero .lbl,.card.target .small,.qk span,.li .small{font-size:13px}
+/* v13 ออฟไลน์ */
+#net{display:block;width:100%;border:0;text-align:left;padding:8px 14px;font:inherit;font-size:13px;background:var(--soft);color:var(--dark);cursor:pointer;border-bottom:1px solid var(--line)}
+#net.off{background:#FEF3C7;color:#78350F}
+#net.err{background:#FEE2E2;color:#991B1B}
+#net.hidden{display:none}
+.li.ob{align-items:flex-start}
+.obact{display:flex;flex-direction:column;gap:6px}
