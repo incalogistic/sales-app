@@ -750,7 +750,7 @@
         '<div class="hero"><div class="lbl">ยอดขายวันนี้</div><div class="amt" id="hToday">฿—</div><div class="lbl" id="hBills"></div></div>' +
         '<div class="card target" id="hTarget"></div>' +
         '<div class="quick">' + quick.map(function (q) { return '<button type="button" class="qk" data-go="' + q[0] + '"><b>' + q[1] + '</b><span>' + q[2] + '</span></button>'; }).join('') + '</div>' +
-        '<div class="sec">ร้านที่ต้องเยี่ยมวันนี้</div><div id="visits"><div class="muted small">กำลังโหลด…</div></div></div>';
+        (isVan() ? '<div class="sec">ร้านที่ต้องเยี่ยมวันนี้ <span class="muted small" id="vcount"></span></div><div id="visits"><div class="muted small">กำลังโหลด…</div></div><div id="offplan"></div>' : '') + '</div>';
       $$('[data-go]').forEach(function (b) { b.onclick = function () { go(b.getAttribute('data-go')); }; });
       return Promise.all([api('apiAppHome'), isVan() ? api('apiCollectPending') : Promise.resolve([]), loadParties().catch(function () { return []; })]).then(function (r) {
         var h = r[0], pend = r[1];
@@ -768,18 +768,25 @@
             (m.total < m.target ? '<div class="muted small" style="margin-top:4px">ต้องขายอีกวันละ ฿' + money0(m.perDay) + ' (' + m.daysLeft + ' วันทำงาน)</div>' : '<div class="small" style="margin-top:4px;color:var(--green)">ถึงเป้าเดือนนี้แล้ว</div>')
           : '<div class="between"><span>ยอดเดือนนี้</span><b>฿' + money0(m.total) + '</b></div><div class="muted small">' + m.count + (isVan() ? ' บิล' : ' ใบสั่งขาย') + ' · ยังไม่ได้ตั้งเป้า</div>';
         var pos = TRK.pos;
+        if (!$('#visits')) return;
+        S.plan = { day: today(), ids: (h.visits || []).map(function (v) { return v.id; }) };
         var vs = h.visits.map(function (v) {
           v.d = pos && v.lat ? distKm(pos.lat, pos.lng, +v.lat, +v.lng) : null;
           return v;
-        }).sort(function (a, b) { return (a.visitedAt ? 1 : 0) - (b.visitedAt ? 1 : 0) || (a.d === null ? 1e9 : a.d) - (b.d === null ? 1e9 : b.d); });
-        $('#visits').innerHTML = vs.length ? vs.map(function (v) {
+        }).sort(function (a, b) { return (a.visitedAt ? 1 : 0) - (b.visitedAt ? 1 : 0) || (num(a.seq) || 999) - (num(b.seq) || 999) || (a.d === null ? 1e9 : a.d) - (b.d === null ? 1e9 : b.d); });
+        var done = vs.filter(function (v) { return v.visitedAt; }).length;
+        if (vs.length) $('#vcount').textContent = 'เยี่ยมแล้ว ' + done + '/' + vs.length;
+        var row = function (v) {
           var pt = (S.parties || []).filter(function (x) { return x.id === v.id; })[0] || {};
-          return '<div class="li vrow"><button type="button" class="grow vmain" data-c="' + esc(v.id) + '"><b>' + esc(v.name) + '</b><div class="muted small">' + esc(v.id) + (v.place ? ' · ' + esc(v.place) : '') + (v.d !== null ? ' · ' + distText(v.d) : '') + '</div>' +
-            (v.visitedAt || v.sold ? '<div class="chips">' + (v.visitedAt ? '<span class="chip g">เยี่ยมแล้ว ' + esc(v.visitedAt) + '</span>' : '') + (v.sold ? '<span class="chip">มีบิลวันนี้</span>' : '') + '</div>' : '') + '</button>' +
+          return '<div class="li vrow"><button type="button" class="grow vmain" data-c="' + esc(v.id) + '"><b>' + (v.seq ? '<span class="seqn">' + v.seq + '</span>' : '') + esc(v.name) + '</b><div class="muted small">' + esc(v.id) + (v.place ? ' · ' + esc(v.place) : '') + (v.d !== null ? ' · ' + distText(v.d) : '') + '</div>' +
+            (v.visitedAt || v.sold || v.offPlan ? '<div class="chips">' + (v.offPlan ? '<span class="chip a">นอกแผน</span>' : '') + (v.visitedAt ? '<span class="chip g">เยี่ยมแล้ว ' + esc(v.visitedAt) + '</span>' : '') + (v.sold ? '<span class="chip">มีบิลวันนี้</span>' : '') + '</div>' : '') + '</button>' +
             (pt.phone ? '<a class="ibtn" aria-label="โทรหาร้าน" href="' + esc(telUrl(pt.phone)) + '">' + ic('phone', 18) + '</a>' : '') +
             (v.lat ? '<a class="ibtn" aria-label="นำทางไปร้าน" target="_blank" rel="noopener" href="' + esc(mapsUrl(v.lat, v.lng)) + '">' + ic('nav', 18) + '</a>' : '') + '</div>';
-        }).join('') : '<div class="empty-note">วันนี้ไม่มีร้านในสายวิ่ง' + (h.weekday === 0 ? ' (วันอาทิตย์)' : '') + '<br><span class="small">แอดมินกำหนดวันเยี่ยมร้านได้ที่ข้อมูลลูกค้าในหลังบ้าน</span></div>';
-        $$('[data-c]', $('#visits')).forEach(function (b) { b.onclick = function () { go('customer', { id: b.getAttribute('data-c') }); }; });
+        };
+        $('#visits').innerHTML = vs.length ? vs.map(row).join('') : '<div class="empty-note">วันนี้ไม่มีร้านในสายวิ่ง' + (h.weekday === 0 ? ' (วันอาทิตย์)' : '') + '<br><span class="small">แอดมินจัดสายวิ่งได้ที่เมนู "สายวิ่งแวน" ในหลังบ้าน</span></div>';
+        var off = (h.offPlan || []).map(function (v) { v.d = pos && v.lat ? distKm(pos.lat, pos.lng, +v.lat, +v.lng) : null; return v; });
+        $('#offplan').innerHTML = off.length ? '<div class="sec">เยี่ยมนอกแผนวันนี้ <span class="muted small">' + off.length + ' ร้าน</span></div>' + off.map(row).join('') : '';
+        $$('[data-c]', $('main')).forEach(function (b) { b.onclick = function () { go('customer', { id: b.getAttribute('data-c') }); }; });
       });
     }
   };
@@ -852,6 +859,13 @@
     }
   };
 
+  /** รหัสร้านในสายวิ่งวันนี้ (null = ยังไม่รู้) */
+  function todayPlan() {
+    if (S.plan && S.plan.day === today()) return S.plan.ids;
+    var c = cacheGet('apiAppHome', []);
+    if (c && c.d && c.d.visits && new Date(c.at).toDateString() === new Date().toDateString()) return c.d.visits.map(function (v) { return v.id; });
+    return null;
+  }
   function mapsUrl(lat, lng) { return 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(lat + ',' + lng); }
   function telUrl(ph) { return 'tel:' + String(ph || '').replace(/[^0-9+]/g, ''); }
   function distText(km) { return km === null || km === undefined ? '' : (km < 1 ? Math.round(km * 1000) + ' ม.' : km.toFixed(1) + ' กม.'); }
@@ -877,14 +891,15 @@
           '<div class="card"><div class="sec" style="margin-top:0">' + (isVan() ? 'บิลวันนี้' : 'ออเดอร์เดือนนี้') + '</div><div id="h" class="small muted">กำลังโหลด…</div></div>' +
           '<details class="card more"><summary>ตัวเลือกเพิ่มเติม</summary><div class="muted small" style="margin:8px 0">พิกัดร้าน: ' + (c.Lat ? esc(c.Lat + ', ' + c.Lng) : 'ยังไม่มี') +
           '<br>ใช้ปุ่มนี้เฉพาะตอนยืนอยู่หน้าร้านเท่านั้น</div><button class="btn block" id="gps" type="button">' + ic('pin', 18) + ' บันทึกพิกัดร้านจากตำแหน่งตอนนี้</button></details></div>';
+        var plan = todayPlan(), offPlan = isVan() && plan && plan.indexOf(c.CustomerId) < 0;
         var drawVisit = function () {
           var v = curVisit(), here = v && v.cid === c.CustomerId;
           $('#visitBox').innerHTML = here
             ? '<div class="card visit on"><div class="between"><div><div class="b t-g">กำลังเยี่ยมร้านนี้</div><div class="muted small">เช็คอิน ' + esc(String(v.at).substring(11, 16)) + ' น. · ' + visitMin(v) + ' นาที</div></div>' +
               '<button class="btn" id="vOut" type="button">เช็คเอาท์</button></div></div>'
-            : '<div class="card visit"><div class="between"><div><div class="b">เยี่ยมร้าน</div><div class="muted small">' + (v ? 'ตอนนี้อยู่ที่ ' + esc(v.name) + ' (จะเช็คเอาท์ให้อัตโนมัติ)' : 'กดเช็คอินเมื่อถึงร้าน') + '</div></div>' +
+            : '<div class="card visit"><div class="between"><div><div class="b">เยี่ยมร้าน' + (offPlan ? ' <span class="chip a">นอกแผนวันนี้</span>' : '') + '</div><div class="muted small">' + (v ? 'ตอนนี้อยู่ที่ ' + esc(v.name) + ' (จะเช็คเอาท์ให้อัตโนมัติ)' : (offPlan ? 'ร้านนี้ไม่อยู่ในสายวิ่งวันนี้ — เช็คอินได้ ระบบบันทึกเป็นเยี่ยมนอกแผน' : 'กดเช็คอินเมื่อถึงร้าน')) + '</div></div>' +
               '<button class="btn grn" id="vIn" type="button">' + ic('check', 18) + ' เช็คอิน</button></div></div>';
-          if ($('#vIn')) $('#vIn').onclick = function () { visitIn(c.CustomerId, c.Name, false); toast('เช็คอินร้าน ' + c.Name); drawVisit(); };
+          if ($('#vIn')) $('#vIn').onclick = function () { visitIn(c.CustomerId, c.Name, false); toast((offPlan ? 'เช็คอินนอกแผน ' : 'เช็คอินร้าน ') + c.Name); drawVisit(); };
           if ($('#vOut')) $('#vOut').onclick = function () { visitOut(); toast('เช็คเอาท์แล้ว'); drawVisit(); };
         };
         drawVisit();
@@ -923,13 +938,22 @@
         function () { busy(false); rej(new Error('อ่านตำแหน่งไม่ได้ — เปิด GPS และอนุญาตตำแหน่งให้แอป')); }, { enableHighAccuracy: true, timeout: 20000 });
     });
   }
-  function shrinkImage(file, maxW) {
+  /** ย่อรูป + (ถ้าส่ง lines) ประทับข้อความ วันเวลา/ร้าน/พิกัด/ผู้ถ่าย ลงมุมล่างของรูป */
+  function shrinkImage(file, maxW, lines) {
     return new Promise(function (res, rej) {
       var img = new Image(), url = URL.createObjectURL(file);
       img.onload = function () {
         var k = Math.min(1, maxW / Math.max(img.width, img.height));
         var c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        var g = c.getContext('2d');
+        g.drawImage(img, 0, 0, c.width, c.height);
+        if (lines && lines.length) {
+          var fs = Math.max(14, Math.round(Math.min(c.width, c.height) / 26)), lh = Math.round(fs * 1.35), pad = Math.round(fs * 0.6);
+          var bh = lines.length * lh + pad * 2;
+          g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(0, c.height - bh, c.width, bh);
+          g.font = '600 ' + fs + 'px "Noto Sans Thai", Tahoma, sans-serif'; g.fillStyle = '#FFFFFF'; g.textBaseline = 'top';
+          lines.forEach(function (t, i) { g.fillText(String(t), pad, c.height - bh + pad + i * lh, c.width - pad * 2); });
+        }
         URL.revokeObjectURL(url);
         res(c.toDataURL('image/jpeg', 0.82));
       };
@@ -995,7 +1019,11 @@
             .catch(function (e) { toast(e.message, true); });
         };
         $('#cam').onclick = function () {
-          pickPhoto().then(function (f) { return shrinkImage(f, 1280); }).then(function (d) { st.photo = d; $('#ph').innerHTML = '<img class="photo" src="' + d + '">'; $('#cam').textContent = 'ถ่ายใหม่'; })
+          pickPhoto().then(function (f) {
+            var u = S.boot.user, p0 = st.gps || TRK.pos;
+            return shrinkImage(f, 1280, ['ถ่ายเมื่อ ' + thDateTime(stamp()) + ' น.', ($('#Name') && $('#Name').value.trim()) || 'ร้านใหม่',
+              p0 ? 'พิกัด ' + num(p0.lat).toFixed(6) + ', ' + num(p0.lng).toFixed(6) : 'ยังไม่มีพิกัด', 'โดย ' + (u.FullName || '') + ' (' + u.Username + ')']);
+          }).then(function (d) { st.photo = d; $('#ph').innerHTML = '<img class="photo" src="' + d + '">'; $('#cam').textContent = 'ถ่ายใหม่'; })
             .catch(function (e) { toast(e.message, true); });
         };
         $('#save').onclick = function () {
@@ -1076,8 +1104,10 @@
           $$('[data-p]', dd).forEach(function (d) {
             d.onclick = function () {
               var code = d.getAttribute('data-p');
-              if (!cart.items.some(function (i) { return i.code === code; })) cart.items.push({ code: code, base: unitsOf(code)[0].f });
+              var at = -1; cart.items.forEach(function (i, k) { if (i.code === code) at = k; });
+              if (at < 0) { cart.items.push({ code: code, base: 0 }); at = cart.items.length - 1; }   // ไม่ใส่จำนวนให้อัตโนมัติ — เซลล์คีย์เอง
               ps.value = ''; showAll = false; dd.classList.add('hidden'); draw(); price();
+              var fi = $('[data-q^="' + at + '|"]'); if (fi) { fi.scrollIntoView({ block: 'center' }); fi.focus(); }
             };
           });
         }, 60);
@@ -1088,17 +1118,17 @@
             var lineTot = pv.reduce(function (s, l) { return s + num(l.LineTotal); }, 0), disc = pv[0] ? num(pv[0].DiscountValue) : 0;
             var onHand = stock ? (stock[it.code] || [0])[0] : null;
             var big = us[0] || { unit: pr.BaseUnit, f: 1 };
-            return '<div class="card item"><div class="between"><div class="muted small">' + esc(it.code) + '</div><button class="rm" data-rm="' + idx + '" type="button" aria-label="ลบ">' + ic('x', 16) + '</button></div>' +
+            return '<div class="card item' + (it.base > 0 ? '' : ' needq') + '"><div class="between"><div class="muted small">' + esc(it.code) + '</div><button class="rm" data-rm="' + idx + '" type="button" aria-label="ลบ">' + ic('x', 16) + '</button></div>' +
               '<div class="b">' + esc(pr.NameTh) + '</div>' +
               '<div class="muted small">' + (num(pr.PricePerCase) ? '฿' + money(pr.PricePerCase) + ' / ' + esc(pr.CaseUnit || big.unit) + (disc ? ' → สุทธิ ฿' + money(num(pr.PricePerCase) * (1 - disc / 100)) : '') : '') + (disc ? ' (ลด ' + disc + '%)' : '') + '</div>' +
               (onHand !== null ? '<div class="small ' + (it.base > onHand ? 't-r' : 't-g') + '">บนรถตอนนี้ ' + esc(qtyText(it.code, onHand)) + (it.base > onHand ? ' — ไม่พอ' : '') + '</div>' : '') +
               '<div class="ucols">' + us.map(function (u) {
                 var q = (parts.filter(function (x) { return x.unit === u.unit; })[0] || { qty: 0 }).qty;
                 return '<div class="ucol"><div class="muted small">' + esc(u.unit) + (u.f > 1 ? ' (' + u.f + ')' : '') + '</div>' +
-                  '<div class="qty"><button type="button" data-d="' + idx + '|' + u.f + '|-1">−</button><input class="input" inputmode="numeric" value="' + q + '" data-q="' + idx + '|' + esc(u.unit) + '">' +
+                  '<div class="qty"><button type="button" data-d="' + idx + '|' + u.f + '|-1">−</button><input class="input" inputmode="numeric" placeholder="0" value="' + (q || '') + '" data-q="' + idx + '|' + esc(u.unit) + '">' +
                   '<button type="button" class="plus" data-d="' + idx + '|' + u.f + '|1">+</button></div></div>';
               }).join('') + '</div>' +
-              '<div class="between small" style="margin-top:8px"><span class="muted">รวม ' + esc(qfmt(it.base)) + ' ' + esc(pr.BaseUnit || '') + '</span><span class="b">' + (pv.length ? money(lineTot) : '') + '</span></div></div>';
+              '<div class="between small" style="margin-top:8px"><span class="' + (it.base > 0 ? 'muted' : 't-r') + '">' + (it.base > 0 ? 'รวม ' + esc(qfmt(it.base)) + ' ' + esc(pr.BaseUnit || '') : 'ยังไม่ใส่จำนวน') + '</span><span class="b">' + (pv.length ? money(lineTot) : '') + '</span></div></div>';
           }).join('') : '<div class="empty-note">ค้นหาหรือกดปุ่ม ▾ เพื่อเลือกสินค้าลงบิล<br><button class="btn" id="repEmpty" type="button" style="margin-top:10px">' + ic('repeat', 18) + ' สั่งเหมือนครั้งก่อน</button></div>';
           if ($('#repEmpty')) $('#repEmpty').onclick = repeatLast;
           $$('[data-rm]').forEach(function (b) { b.onclick = function () { cart.items.splice(+b.getAttribute('data-rm'), 1); draw(); price(); }; });
@@ -1180,7 +1210,12 @@
         };
         $('#go').onclick = function () { submit(); };
         var submit = function () {
-          var ls = lines();
+          var ls = lines(), noQ = cart.items.filter(function (i) { return !(i.base > 0); });
+          if (noQ.length) {
+            toast('ยังไม่ใส่จำนวน ' + noQ.length + ' รายการ — ใส่จำนวนหรือกด ✕ ลบออก', true);
+            var nq = $('.item.needq'); if (nq) nq.scrollIntoView({ block: 'center' });
+            return;
+          }
           if (!ls.length) { toast('ยังไม่มีสินค้าในบิล', true); return; }
           if (!cart.preview) { toast('คำนวณราคาไม่สำเร็จ ลองแก้จำนวนอีกครั้ง', true); return; }
           var bt = billTotals(cart.preview, party), total = money(bt.total), ref = newRef();
@@ -1248,6 +1283,37 @@
       });
     }
   };
+  // รายการสินค้าในบิล/ออเดอร์: โปร/ส่วนลด · ราคาก่อน VAT · รวม VAT รายสินค้า (ส่วนลดท้ายบิลเฉลี่ยตามยอดแต่ละรายการ)
+  function billItemsHtml(d, items) {
+    var vt = d.VatType || 'EX', rate = vt === 'NONE' ? 0 : num(d.VatRate || vatRate());
+    var exOf = function (v) { return vt === 'IN' ? v * 100 / (100 + rate) : v; };
+    var incOf = function (v) { return vt === 'EX' ? v * (1 + rate / 100) : v; };
+    var sumLines = items.reduce(function (t, i) { return t + num(i.LineTotal); }, 0), hd = num(d.HeaderDiscountAmount);
+    var share = sumLines ? Math.max(0, 1 - hd / sumLines) : 1;
+    var pg = (S.promo && S.promo.groups) || {};
+    var hdPct = sumLines ? Math.round(hd / sumLines * 10000) / 100 : 0;
+    var rows = items.map(function (i) {
+      var free = String(i.IsFree) === 'TRUE', gross = num(i.GrossAmount), dAmt = num(i.DiscountAmount), lt = num(i.LineTotal);
+      var net = lt * share, pct = num(i.DiscountValue) || num(i.AutoDiscountPct);
+      var gName = i.PromoGroupId ? ((pg[i.PromoGroupId] && pg[i.PromoGroupId].GroupName) || i.PromoGroupId) : '';
+      var promo = free ? '<span class="pchip">ของแถม</span>' : (dAmt > 0 ? '<span class="pchip">' + (gName ? esc(gName) + ' · ' : '') + 'ลด ' + qfmt(pct) + (i.DiscountType === 'BAHT' ? ' บ.' : '%') + ' = -' + money(dAmt) + '</span>' : '');
+      return '<div class="bi"><div class="between"><div><div class="small muted">' + esc(i.ProductCode) + '</div><div class="b">' + esc(i.ProductName) + '</div></div>' +
+        '<div class="r b">' + qfmt(i.Qty) + ' ' + esc(i.Unit) + '</div></div>' + (promo ? '<div>' + promo + '</div>' : '') +
+        '<div class="bigrid small"><span class="muted">ราคา/หน่วย ก่อน VAT</span><span class="r">' + money(exOf(num(i.UnitPrice))) + '</span>' +
+        '<span class="muted">มูลค่าสินค้า</span><span class="r">' + money(gross) + '</span>' +
+        (dAmt > 0 ? '<span class="muted">ส่วนลดโปร</span><span class="r t-r">-' + money(dAmt) + '</span>' : '') +
+        (hd > 0 && lt > 0 ? '<span class="muted">ส่วนลดร้าน ' + qfmt(hdPct) + '%</span><span class="r t-r">-' + money(lt - net) + '</span>' : '') +
+        (vt !== 'NONE' ? '<span class="muted">ก่อน VAT</span><span class="r">' + money(exOf(net)) + '</span>' : '') +
+        '<span class="b">' + (vt === 'NONE' ? 'สุทธิ' : 'รวม VAT') + '</span><span class="r b">' + money(incOf(net)) + '</span></div></div>';
+    }).join('');
+    var beforeVat = num(d.AfterDiscount) - (vt === 'IN' ? num(d.VatAmount) : 0);
+    return '<div class="card"><h3>รายการสินค้า (' + items.length + ')</h3>' + rows +
+      '<div class="tot" style="margin-top:8px"><div><span class="muted">รวมราคาสินค้า</span><span>' + money(d.SubTotal) + '</span></div>' +
+      (num(d.LineDiscountTotal) ? '<div><span class="muted">ส่วนลดโปร</span><span>-' + money(d.LineDiscountTotal) + '</span></div>' : '') +
+      (hd ? '<div><span class="muted">ส่วนลดร้าน' + (d.HeaderDiscountType !== 'BAHT' ? ' ' + qfmt(d.HeaderDiscountValue) + '%' : '') + '</span><span>-' + money(hd) + '</span></div>' : '') +
+      (vt !== 'NONE' ? '<div><span class="muted">ก่อน VAT</span><span>' + money(beforeVat) + '</span></div><div><span class="muted">VAT ' + qfmt(rate) + '%</span><span>' + money(d.VatAmount) + '</span></div>' : '<div><span class="muted">ไม่คิด VAT</span><span>-</span></div>') +
+      '<div class="grand"><span>รวมทั้งสิ้น</span><span>' + money(d.NetTotal) + '</span></div></div></div>';
+  }
   VIEWS.bill = {
     shell: true, title: 'รายละเอียด',
     render: function (el, p) {
@@ -1262,10 +1328,7 @@
           (d.DocType === 'INV' ? '<div style="margin-top:6px">' + chip(PAY, d.PaymentStatus || 'UNPAID') + '</div>' : '') +
           (d.Status !== 'CANCELLED' ? '<div class="tl" style="margin-top:10px">' + steps.map(function (s) { return '<div class="' + (s[1] ? 'on' : '') + '">' + s[0] + '</div>'; }).join('') + '</div>' :
             '<div class="warn" style="margin-top:8px">เอกสารนี้ถูกยกเลิก' + (d.Reason ? ': ' + esc(d.Reason) : '') + '</div>') + '</div>' +
-          '<div class="card"><table class="t"><tr><th>สินค้า</th><th class="r">จำนวน</th><th class="r">เงิน</th></tr>' + items.map(function (i) {
-            return '<tr><td><div class="small b">' + esc(i.ProductCode) + '</div>' + esc(i.ProductName) + '</td><td class="r">' + qfmt(i.Qty) + ' ' + esc(i.Unit) + '</td><td class="r">' + money(i.LineTotal) + '</td></tr>';
-          }).join('') + '</table><div class="tot" style="margin-top:8px"><div><span class="muted">ก่อน VAT</span><span>' + money(num(d.AfterDiscount) - (d.VatType === 'IN' ? num(d.VatAmount) : 0)) + '</span></div>' +
-          '<div><span class="muted">VAT</span><span>' + money(d.VatAmount) + '</span></div><div class="grand"><span>รวม</span><span>' + money(d.NetTotal) + '</span></div></div></div><div id="acts"></div>';
+          billItemsHtml(d, items) + '<div id="acts"></div>';
         var a = '';
         if (isVan() && d.DocType === 'INV' && d.Status === 'APPROVED') {
           var printed = num(d.ReceiptPrints);
@@ -1393,35 +1456,75 @@
     return {
       shell: true, title: kind === 'VL' ? 'ขอโหลดสินค้าขึ้นรถ' : 'ขอคืนสินค้าจากรถ',
       render: function (el) {
-        var items = [];
-        return loadCatalog().then(function () {
-          el.innerHTML = '<div class="hint">' + (kind === 'VL' ? 'เลือกสินค้าและจำนวนที่ต้องการโหลดขึ้นรถ ส่งให้แอดมินอนุมัติ' : 'เลือกสินค้าที่จะคืนเข้าคลัง ส่งให้แอดมินอนุมัติ') + '</div>' +
-            '<div class="search" style="margin:10px 0"><input class="input" id="ps" placeholder="ค้นหารหัส หรือชื่อสินค้า"><div class="drop hidden" id="dd"></div></div><div id="ls"></div>' +
-            '<button class="btn pri block" id="go" type="button">ส่งคำขอ</button>';
-          var draw = function () {
-            $('#ls').innerHTML = items.map(function (it, i) {
-              var pr = S.catMap[it.code];
-              return '<div class="card"><div class="between"><div><div class="small b">' + esc(it.code) + '</div>' + esc(pr.NameTh) + '</div><button class="btn" data-rm="' + i + '" type="button">ลบ</button></div>' +
-                unitsOf(it.code).map(function (u) {
-                  return '<div class="between line"><span>' + esc(u.unit) + '</span><input class="input" style="width:90px;text-align:center" inputmode="numeric" data-u="' + i + '|' + esc(u.unit) + '" value="' + (it.q[u.unit] || '') + '"></div>';
-                }).join('') + '</div>';
-            }).join('');
-            $$('[data-rm]').forEach(function (b) { b.onclick = function () { items.splice(+b.getAttribute('data-rm'), 1); draw(); }; });
-            $$('[data-u]').forEach(function (inp) { inp.oninput = function () { var a = inp.getAttribute('data-u').split('|'); items[+a[0]].q[a[1]] = Math.max(0, Math.floor(num(inp.value))); }; });
+        var sel = {}, filt = kind === 'VU' ? 'ONCAR' : 'ALL';   // sel[code][unit] = qty
+        var wh = S.boot.user.VanWarehouseId;
+        return Promise.all([loadCatalog(), wh ? api('apiStockOnHand', wh).catch(function () { return null; }) : Promise.resolve(null)]).then(function (r) {
+          var stock = r[1] && r[1].qty ? r[1].qty : {};
+          var onCar = function (c) { return num((stock[c] || [0])[0]); };
+          var picked = function (c) { var o = sel[c] || {}; return Object.keys(o).some(function (u) { return o[u] > 0; }); };
+          el.innerHTML = '<div class="hint">' + (kind === 'VL' ? 'กด + ที่สินค้าที่ต้องการโหลดขึ้นรถ แล้วกด "ส่งคำขอ" ให้แอดมินอนุมัติ' : 'กด + ที่สินค้าที่จะคืนเข้าคลัง แล้วกด "ส่งคำขอ" ให้แอดมินอนุมัติ') + '</div>' +
+            '<div class="sticky ldtop"><div class="sbox">' + ic('search', 18) + '<input class="input" id="ps" placeholder="ค้นหารหัส หรือชื่อสินค้า"></div>' +
+            '<div class="chips" id="lf">' + [['ALL', 'ทั้งหมด'], ['ONCAR', 'มีบนรถ'], ['PICKED', 'เลือกแล้ว']].map(function (o) {
+              return '<button type="button" class="chipb" data-f="' + o[0] + '">' + o[1] + '</button>'; }).join('') + '</div></div>' +
+            '<div id="ls" class="ldl"></div><div style="height:90px"></div>' +
+            '<div class="sellbar"><div class="grow"><div class="b" id="lc">ยังไม่ได้เลือก</div><div class="muted small" id="lc2"></div></div>' +
+            '<button class="btn pri" id="go" type="button">ส่งคำขอ</button></div>';
+          var bar = function () {
+            var n = 0, cs = 0;
+            Object.keys(sel).forEach(function (c) { if (picked(c)) { n++; Object.keys(sel[c]).forEach(function (u) { cs += baseOf(c, u, sel[c][u]) / ((unitsOf(c)[0] || { f: 1 }).f || 1); }); } });
+            $('#lc').textContent = n ? 'เลือกแล้ว ' + n + ' รายการ' : 'ยังไม่ได้เลือก';
+            $('#lc2').textContent = n ? 'ประมาณ ' + qfmt(Math.round(cs * 100) / 100) + ' หีบ' : 'กด + ที่สินค้า';
+            $$('[data-f]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-f') === filt); b.textContent = b.getAttribute('data-f') === 'PICKED' ? 'เลือกแล้ว' + (n ? ' (' + n + ')' : '') : b.textContent; });
           };
-          $('#ps').oninput = debounce(function () {
-            var q = $('#ps').value.trim().toLowerCase(), dd = $('#dd');
-            if (!q) { dd.classList.add('hidden'); return; }
-            dd.innerHTML = S.cat.filter(function (x) { return (x.ProductCode + ' ' + x.NameTh).toLowerCase().indexOf(q) >= 0; }).slice(0, 30)
-              .map(function (x) { return '<div data-p="' + esc(x.ProductCode) + '"><b class="small">' + esc(x.ProductCode) + '</b> ' + esc(x.NameTh) + '</div>'; }).join('');
-            dd.classList.remove('hidden');
-            $$('[data-p]', dd).forEach(function (d) { d.onclick = function () { var c = d.getAttribute('data-p'); if (!items.some(function (i) { return i.code === c; })) items.push({ code: c, q: {} }); $('#ps').value = ''; dd.classList.add('hidden'); draw(); }; });
-          }, 120);
+          var rowHtml = function (p) {
+            var c = p.ProductCode, o = sel[c] || {}, oc = onCar(c);
+            return '<div class="ldr' + (picked(c) ? ' on' : '') + '" data-row="' + esc(c) + '"><div class="ldn"><div class="b small">' + esc(p.NameTh) + '</div>' +
+              '<div class="muted small">' + esc(c) + (oc ? ' · บนรถ ' + esc(qtyText(c, oc)) : '') + '</div></div><div class="ldu">' +
+              unitsOf(c).map(function (u) {
+                var q = o[u.unit] || 0;
+                return '<div class="ldq"><span class="muted small">' + esc(u.unit) + '</span><div class="qty"><button type="button" data-st="' + esc(c) + '|' + esc(u.unit) + '|-1" aria-label="ลด">−</button>' +
+                  '<input class="input" inputmode="numeric" placeholder="0" value="' + (q || '') + '" data-u="' + esc(c) + '|' + esc(u.unit) + '">' +
+                  '<button type="button" class="plus" data-st="' + esc(c) + '|' + esc(u.unit) + '|1" aria-label="เพิ่ม">+</button></div></div>';
+              }).join('') + '</div></div>';
+          };
+          var setQ = function (c, u, v) {
+            sel[c] = sel[c] || {}; sel[c][u] = Math.max(0, Math.floor(num(v)));
+            var row = $('[data-row="' + c + '"]'), inp = row && $('[data-u="' + c + '|' + u + '"]', row);
+            if (inp && document.activeElement !== inp) inp.value = sel[c][u] || '';
+            if (row) row.classList.toggle('on', picked(c));
+            bar();
+          };
+          var draw = function () {
+            var k = $('#ps').value.trim().toLowerCase();
+            var l = S.cat.filter(function (p) {
+              if (k && (p.ProductCode + ' ' + p.NameTh).toLowerCase().indexOf(k) < 0) return false;
+              if (filt === 'ONCAR' && !onCar(p.ProductCode)) return false;
+              if (filt === 'PICKED' && !picked(p.ProductCode)) return false;
+              return true;
+            });
+            var more = l.length > 120; l = l.slice(0, 120);
+            $('#ls').innerHTML = l.length ? l.map(rowHtml).join('') + (more ? '<div class="muted small c" style="padding:10px">แสดง 120 รายการแรก — พิมพ์ค้นหาเพื่อหาสินค้าอื่น</div>' : '')
+              : '<div class="empty-note">' + (filt === 'PICKED' ? 'ยังไม่ได้เลือกสินค้า' : filt === 'ONCAR' ? 'ไม่มีสินค้าบนรถ' + (k ? 'ที่ตรงกับคำค้น' : '') : 'ไม่พบสินค้า') + '</div>';
+            $$('[data-st]', $('#ls')).forEach(function (b) {
+              b.onclick = function () { var a = b.getAttribute('data-st').split('|'); setQ(a[0], a[1], ((sel[a[0]] || {})[a[1]] || 0) + num(a[2])); };
+            });
+            $$('[data-u]', $('#ls')).forEach(function (inp) {
+              inp.oninput = function () { var a = inp.getAttribute('data-u').split('|'); setQ(a[0], a[1], inp.value); };
+              inp.onfocus = function () { inp.select && inp.select(); };
+            });
+            bar();
+          };
+          $('#ps').oninput = debounce(draw, 120);
+          $$('[data-f]').forEach(function (b) { b.onclick = function () { filt = b.getAttribute('data-f'); draw(); }; });
           $('#go').onclick = function () {
-            var ls = [];
-            items.forEach(function (it) { Object.keys(it.q).forEach(function (u) { if (it.q[u] > 0) ls.push({ ProductCode: it.code, Unit: u, Qty: it.q[u] }); }); });
+            var ls = [], over = [];
+            Object.keys(sel).forEach(function (c) { Object.keys(sel[c]).forEach(function (u) { if (sel[c][u] > 0) ls.push({ ProductCode: c, Unit: u, Qty: sel[c][u] }); }); });
             if (!ls.length) { toast('ยังไม่ได้ใส่จำนวนสินค้า', true); return; }
-            var wh = S.boot.user.VanWarehouseId;
+            if (kind === 'VU') Object.keys(sel).forEach(function (c) {
+              var b = 0; Object.keys(sel[c]).forEach(function (u) { b += baseOf(c, u, sel[c][u]); });
+              if (b > onCar(c)) over.push(S.catMap[c].NameTh);
+            });
+            if (over.length) { toast('คืนเกินของที่มีบนรถ: ' + over.slice(0, 3).join(', '), true); return; }
             var doc = kind === 'VL' ? { DocType: 'VL', ToWarehouseId: wh, Reason: 'LOAD', lines: ls } : { DocType: 'VU', WarehouseId: wh, Reason: 'RETURN', lines: ls };
             doc.ClientRef = newRef();
             send('apiDocSave', [doc, { submit: true }], { ref: doc.ClientRef, kind: kind, label: (kind === 'VL' ? 'ขอโหลดสินค้า ' : 'ขอคืนสินค้า ') + ls.length + ' รายการ' }).then(function (sr) {
