@@ -158,7 +158,9 @@
     if (shell) {
       $('#title').textContent = typeof v.title === 'function' ? v.title(S.view.params) : v.title;
       $('#back').classList.toggle('hidden', !S.stack.length);
-      $('#who').innerHTML = esc(S.boot.user.Username) + '<br>' + esc(S.boot.user.VanName || S.boot.user.RoleNameTh || '');
+      var u0 = S.boot.user;
+      $('#sub').textContent = [u0.FullName, u0.VanName || ''].filter(Boolean).join(' · ');
+      $('#who').textContent = isVan() ? 'แวน ' + u0.Username : (u0.RoleCode === 'PRE' ? 'พรีเซลล์' : (u0.RoleNameTh || u0.Username));
       drawTabs();
     }
     Promise.resolve(v.render(main, S.view.params)).catch(function (e) {
@@ -166,13 +168,28 @@
       var b = $('#retry'); if (b) b.onclick = render;
     });
   }
+  var IC = {
+    home: '<path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+    shop: '<path d="M3 9l1.5-5h15L21 9"/><path d="M4 9v11h16V9"/><path d="M9 20v-6h6v6"/>',
+    cart: '<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.4 11.2a1 1 0 0 0 1 .8h9.7a1 1 0 0 0 1-.8L21 7H6"/>',
+    truck: '<path d="M1 5h13v11H1z"/><path d="M14 9h4l4 4v3h-8z"/><circle cx="5.5" cy="18.5" r="2"/><circle cx="17.5" cy="18.5" r="2"/>',
+    bill: '<path d="M5 2h14v20l-3-2-2 2-2-2-2 2-2-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h4"/>',
+    chev: '<path d="M9 18l6-6-6-6"/>', pin: '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>', down: '<path d="M6 9l6 6 6-6"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>',
+    check: '<path d="M5 12l5 5L20 7"/>'
+  };
+  function ic(n, sz) { return '<svg width="' + (sz || 22) + '" height="' + (sz || 22) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + IC[n] + '</svg>'; }
   function drawTabs() {
     var tabs = isVan()
-      ? [['home', '🏠', 'หน้าแรก'], ['sell', '🛒', 'ขาย'], ['bills', '🧾', 'บิลวันนี้'], ['stock', '📦', 'สต็อกรถ'], ['more', '☰', 'เมนู']]
-      : [['home', '🏠', 'หน้าแรก'], ['customers', '🏪', 'ลูกค้า'], ['sell', '➕', 'สั่งขาย'], ['orders', '📋', 'ออเดอร์'], ['more', '☰', 'เมนู']];
+      ? [['home', 'home', 'หน้าแรก'], ['customers', 'shop', 'ลูกค้า'], ['sell', 'cart', 'ขาย'], ['stock', 'truck', 'สต็อกรถ'], ['bills', 'bill', 'บิล']]
+      : [['home', 'home', 'หน้าแรก'], ['customers', 'shop', 'ลูกค้า'], ['sell', 'cart', 'สั่งขาย'], ['orders', 'bill', 'ออเดอร์']];
     var cur = S.stack.length ? (S.stack[0].name === 'home' && S.stack[1] ? S.stack[1].name : S.view.name) : S.view.name;
+    if (cur === 'customer') cur = 'customers';
     $('#tabs').innerHTML = '<div class="tabs-in">' + tabs.map(function (t) {
-      return '<button type="button" data-tab="' + t[0] + '" class="' + (t[0] === S.view.name || t[0] === cur ? 'on' : '') + '"><span class="ic">' + t[1] + '</span>' + t[2] + '</button>';
+      var isTab = tabs.some(function (x) { return x[0] === S.view.name; });
+      var on = isTab ? t[0] === S.view.name : t[0] === cur;
+      return '<button type="button" data-tab="' + t[0] + '" class="' + (on ? 'on' : '') + (t[0] === 'sell' ? ' mid' : '') + '">' +
+        (t[0] === 'sell' ? '<span class="fab">' + ic(t[1]) + '</span>' : ic(t[1])) + '<span>' + t[2] + '</span></button>';
     }).join('') + '</div>';
     $$('[data-tab]').forEach(function (b) {
       b.onclick = function () { var n = b.getAttribute('data-tab'); S.stack = n === 'home' ? [] : [{ name: 'home', params: {} }]; S.view = { name: n, params: {} }; render(); };
@@ -366,30 +383,52 @@
 
   // ---------------------------------------------------------------- home
   VIEWS.home = {
-    shell: true, title: function () { return isVan() ? 'แวนเซลล์' : 'พรีเซลล์'; },
+    shell: true, title: function () { return brand().salesAppName || 'INCA Go Sales'; },
     render: function (el) {
       var u = S.boot.user;
-      el.innerHTML = '<div class="card"><div class="muted small">สวัสดี</div><div class="b" style="font-size:18px">' + esc(u.FullName) + '</div>' +
-        '<div class="muted small">' + esc(u.RoleNameTh) + (u.VanName ? ' · ' + esc(u.VanName) : '') + ' · ' + thDate(today()) + '</div></div>' +
-        '<div id="kpi"></div><div class="btns" id="tiles"></div>';
-      var tiles = isVan()
-        ? [['sell', '🛒', 'ขายสินค้า'], ['collectList', '💵', 'รับชำระ'], ['bills', '🧾', 'บิลวันนี้'], ['stock', '📦', 'สต็อกบนรถ'],
-           ['loadReq', '⬆️', 'ขอโหลดสินค้า'], ['daySummary', '📊', 'สรุปยอดวันนี้']]
-        : [['sell', '➕', 'สั่งขาย'], ['customers', '🏪', 'ลูกค้าที่ดูแล'], ['orders', '📋', 'ออเดอร์เดือนนี้'], ['newCustomer', '🆕', 'เปิดร้านใหม่']];
-      $('#tiles').innerHTML = tiles.map(function (t) { return '<div class="tile" data-go="' + t[0] + '"><span class="ic">' + t[1] + '</span>' + t[2] + '</div>'; }).join('');
+      var quick = isVan()
+        ? [['sell', 'ขายสินค้า', 'ออกบิล + รับชำระ'], ['customers', 'ลูกค้า', 'ร้านในสายวิ่ง'], ['loadReq', 'ขอโหลดสินค้า', 'เติมของขึ้นรถ'], ['daySummary', 'ปิดรถวันนี้', 'ส่งเงิน + นับสต็อก']]
+        : [['sell', 'สั่งขาย', 'ส่งใบสั่งขาย + เช็กโปร'], ['customers', 'ลูกค้า', 'ร้านที่ดูแล'], ['newCustomer', 'ขอเปิดร้านใหม่', 'รอแอดมินอนุมัติ'], ['orders', 'ออเดอร์ของฉัน', 'สถานะการอนุมัติ']];
+      el.innerHTML = '<div class="stack"><div class="hello">สวัสดี <b>' + esc(u.FullName) + '</b></div><div id="alert"></div>' +
+        '<div class="hero"><div class="lbl">ยอดขายวันนี้</div><div class="amt" id="hToday">฿—</div><div class="lbl" id="hBills"></div></div>' +
+        '<div class="card target" id="hTarget"></div>' +
+        '<div class="quick">' + quick.map(function (q) { return '<button type="button" class="qk" data-go="' + q[0] + '"><b>' + q[1] + '</b><span>' + q[2] + '</span></button>'; }).join('') + '</div>' +
+        '<div class="sec">ร้านที่ต้องเยี่ยมวันนี้</div><div id="visits"><div class="muted small">กำลังโหลด…</div></div></div>';
       $$('[data-go]').forEach(function (b) { b.onclick = function () { go(b.getAttribute('data-go')); }; });
-      var from = isVan() ? today() : monthStart();
-      return Promise.all([docs({ docType: isVan() ? 'INV' : 'SO', dateFrom: from, dateTo: today() }), isVan() ? api('apiCollectPending') : Promise.resolve([])])
-        .then(function (r) {
-          var list = r[0].filter(function (d) { return d.Status !== 'CANCELLED'; });
-          var sum = list.reduce(function (s, d) { return s + num(d.NetTotal); }, 0);
-          $('#kpi').innerHTML = '<div class="card"><div class="between"><div><div class="muted small">' + (isVan() ? 'ยอดขายวันนี้' : 'ยอดสั่งขายเดือนนี้') + '</div>' +
-            '<div class="big">' + money(sum) + '</div><div class="muted small">' + list.length + (isVan() ? ' บิล' : ' ออเดอร์') + '</div></div>' +
-            (isVan() && r[1].length ? '<div class="chip r" data-go2="collectList">ค้างรับชำระ ' + r[1].length + ' บิล</div>' : '') + '</div></div>';
-          var c = $('[data-go2]'); if (c) c.onclick = function () { go('collectList'); };
-        });
+      return Promise.all([api('apiAppHome'), isVan() ? api('apiCollectPending') : Promise.resolve([]), loadParties().catch(function () { return []; })]).then(function (r) {
+        var h = r[0], pend = r[1];
+        $('#hToday').textContent = '฿' + money(h.today.total);
+        $('#hBills').textContent = h.today.count + (isVan() ? ' บิล' : ' ใบสั่งขาย') + ' วันนี้';
+        var al = [];
+        if (isVan() && pend.length) al.push('<button type="button" class="alert" id="goCol">มีบิล ' + pend.length + ' ใบที่ยังไม่ได้รับชำระ — แตะเพื่อรับชำระ</button>');
+        if (!isVan() && h.pendingOrders) al.push('<div class="alert">มีใบสั่งขาย ' + h.pendingOrders + ' ใบรอแอดมินอนุมัติ</div>');
+        $('#alert').innerHTML = al.join('');
+        if ($('#goCol')) $('#goCol').onclick = function () { go('collectList'); };
+        var m = h.month;
+        $('#hTarget').innerHTML = m.target
+          ? '<div class="between"><span>ยอดเดือนนี้ เทียบเป้า</span><b>' + m.pct + '%</b></div><div class="bar"><i style="width:' + Math.min(m.pct, 100) + '%"></i></div>' +
+            '<div class="between muted small"><span>ทำได้ ฿' + money(m.total) + '</span><span>เป้า ฿' + money(m.target) + '</span></div>' +
+            (m.total < m.target ? '<div class="muted small" style="margin-top:4px">ต้องขายอีกวันละ ฿' + money(m.perDay) + ' (' + m.daysLeft + ' วันทำงาน)</div>' : '<div class="small" style="margin-top:4px;color:var(--green)">ถึงเป้าเดือนนี้แล้ว</div>')
+          : '<div class="between"><span>ยอดเดือนนี้</span><b>฿' + money(m.total) + '</b></div><div class="muted small">' + m.count + (isVan() ? ' บิล' : ' ใบสั่งขาย') + ' · ยังไม่ได้ตั้งเป้า</div>';
+        var pos = TRK.pos;
+        var vs = h.visits.map(function (v) {
+          v.d = pos && v.lat ? distKm(pos.lat, pos.lng, +v.lat, +v.lng) : null;
+          return v;
+        }).sort(function (a, b) { return (a.visitedAt ? 1 : 0) - (b.visitedAt ? 1 : 0) || (a.d === null ? 1e9 : a.d) - (b.d === null ? 1e9 : b.d); });
+        $('#visits').innerHTML = vs.length ? vs.map(function (v) {
+          return '<button type="button" class="li" data-c="' + esc(v.id) + '"><div class="grow"><b>' + esc(v.name) + '</b><div class="muted small">' + esc(v.id) + (v.place ? ' · ' + esc(v.place) : '') + '</div>' +
+            (v.visitedAt || v.sold ? '<div class="chips">' + (v.visitedAt ? '<span class="chip g">เยี่ยมแล้ว ' + esc(v.visitedAt) + '</span>' : '') + (v.sold ? '<span class="chip">มีบิลวันนี้</span>' : '') + '</div>' : '') +
+            '</div><span class="muted small">' + (v.d === null ? '' : (v.d < 1 ? Math.round(v.d * 1000) + ' ม.' : v.d.toFixed(1) + ' กม.')) + '</span></button>';
+        }).join('') : '<div class="empty-note">วันนี้ไม่มีร้านในสายวิ่ง' + (h.weekday === 0 ? ' (วันอาทิตย์)' : '') + '<br><span class="small">แอดมินกำหนดวันเยี่ยมร้านได้ที่ข้อมูลลูกค้าในหลังบ้าน</span></div>';
+        $$('[data-c]', $('#visits')).forEach(function (b) { b.onclick = function () { go('customer', { id: b.getAttribute('data-c') }); }; });
+      });
     }
   };
+  function distKm(a1, o1, a2, o2) {
+    var R = 6371, r = Math.PI / 180, dA = (a2 - a1) * r, dO = (o2 - o1) * r;
+    var x = Math.sin(dA / 2) * Math.sin(dA / 2) + Math.cos(a1 * r) * Math.cos(a2 * r) * Math.sin(dO / 2) * Math.sin(dO / 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
+  }
 
   // ---------------------------------------------------------------- more menu
   VIEWS.more = {
@@ -412,20 +451,21 @@
   VIEWS.customers = {
     shell: true, title: 'ลูกค้า',
     render: function (el, p) {
-      el.innerHTML = '<div class="sticky"><input class="input" id="q" placeholder="ค้นหา ชื่อร้าน / รหัส / เบอร์โทร"></div>' +
-        (isVan() ? '' : '<button class="btn block" id="nc" type="button" style="margin-bottom:10px">＋ เปิดร้านค้าใหม่</button>') + '<div class="list" id="l"></div>';
+      el.innerHTML = '<div class="sticky"><div class="row" style="gap:8px"><div class="sbox grow">' + ic('search', 18) + '<input class="input" id="q" placeholder="ค้นหาชื่อร้าน / รหัส / เบอร์โทร"></div>' +
+        (isVan() || p.pick ? '' : '<button class="btn pri" id="nc" type="button">+ ร้านใหม่</button>') + '</div></div>' +
+        '<div class="sec" id="cnt"></div><div class="rows" id="l"></div>';
       if ($('#nc')) $('#nc').onclick = function () { go('newCustomer'); };
       var orders = {};
       var draw = function () {
         var q = $('#q').value.trim().toLowerCase();
         var l = S.parties.filter(function (c) { return !q || (c.id + ' ' + c.name + ' ' + (c.altName || '') + ' ' + (c.phone || '')).toLowerCase().indexOf(q) >= 0; });
+        $('#cnt').textContent = (p.pick ? 'เลือกร้านค้า · ' : 'ร้านที่ดูแล ') + l.length + ' ร้าน';
         $('#l').innerHTML = l.slice(0, 200).map(function (c) {
-          return '<div class="it" data-c="' + esc(c.id) + '"><div class="between"><div class="b">' + esc(c.name) + '</div>' +
-            (c.blocked ? '<span class="chip r">ระงับ</span>' : '') + '</div><div class="muted small">' + esc(c.id) + (c.place ? ' · ' + esc(c.place) : '') + '</div>' +
-            '<div class="row small" style="margin-top:4px;gap:6px;flex-wrap:wrap">' +
-            (c.unpaid > 0 ? '<span class="chip r">ค้างชำระ ' + money(c.unpaid) + '</span>' : '<span class="chip g">ไม่มียอดค้าง</span>') +
-            (orders[c.id] ? '<span class="chip a">ออเดอร์เดือนนี้ ' + orders[c.id] + '</span>' : '') + '</div></div>';
-        }).join('') || '<div class="muted c">ไม่พบลูกค้า</div>';
+          return '<button type="button" class="li" data-c="' + esc(c.id) + '"><div class="grow"><b>' + esc(c.name) + '</b>' +
+            '<div class="muted small">' + esc(c.id) + (c.place ? ' · ' + esc(c.place) : '') + '</div>' +
+            '<div class="small" style="margin-top:2px">' + (c.blocked ? '<span class="t-r">ระงับการขาย</span>' : c.unpaid > 0 ? '<span class="t-r">ค้างชำระ ' + money(c.unpaid) + '</span>' : '<span class="t-g">ไม่มียอดค้าง</span>') + '</div></div>' +
+            (orders[c.id] ? '<span class="chip">' + orders[c.id] + ' ออเดอร์</span>' : '') + '<span class="chev">' + ic('chev', 18) + '</span></button>';
+        }).join('') || '<div class="empty-note">ไม่พบลูกค้า</div>';
         $$('[data-c]').forEach(function (b) {
           b.onclick = function () {
             var id = b.getAttribute('data-c');
@@ -625,17 +665,21 @@
         }
         if (party.blocked) { el.innerHTML = '<div class="warn">ร้าน ' + esc(party.name) + ' ถูกระงับการขาย กรุณาติดต่อแอดมิน</div>'; return; }
         if (!cart.started) { cart.started = stamp(); visitIn(party.id, party.name, true); trk('ORDER_START', { cid: party.id }); }
-        el.innerHTML = '<div class="sticky"><div class="card" style="margin:0 0 6px"><div class="between"><div><div class="b">' + esc(party.name) + '</div>' +
-          '<div class="muted small">' + esc(party.id) + (party.unpaid > 0 ? ' · ค้างชำระ ' + money(party.unpaid) : '') + '</div></div>' +
-          '<button class="btn" id="chg" type="button">เปลี่ยน</button></div></div>' +
-          '<div class="search"><input class="input" id="ps" placeholder="🔍 พิมพ์รหัส หรือชื่อสินค้า"><div class="drop hidden" id="dd"></div></div></div>' +
-          '<div id="lines"></div><div id="groups"></div><div class="card tot" id="tot"></div><div id="foot"></div>';
+        el.innerHTML = '<div class="sell-pad"><div class="card party"><div class="between"><div><div class="muted small">ร้านค้า</div><div class="b">' + esc(party.name) + '</div>' +
+          '<div class="muted small">' + esc(party.id) + (party.unpaid > 0 ? ' · <span class="t-r">ค้างชำระ ' + money(party.unpaid) + '</span>' : '') + '</div></div>' +
+          '<button class="btn sm" id="chg" type="button">เปลี่ยน</button></div></div>' +
+          '<div class="sticky"><div class="search"><div class="sbox">' + ic('search', 18) + '<input class="input" id="ps" placeholder="พิมพ์รหัส หรือชื่อสินค้า"><button type="button" class="ddbtn" id="psAll" aria-label="ดูสินค้าทั้งหมด">' + ic('down', 18) + '</button></div><div class="drop hidden" id="dd"></div></div></div>' +
+          '<div id="groups"></div><div id="lines"></div><div class="card tot" id="tot"></div><div id="foot"></div></div>' +
+          '<div class="sellbar"><div class="grow"><div class="muted small" id="sbInfo">0 รายการ</div><div class="sbTot" id="sbTot">฿0.00</div></div>' +
+          '<button class="btn pri" id="go" type="button">' + (isVan() ? 'ยืนยันขาย / ออกบิล' : 'ยืนยันออเดอร์') + '</button></div>';
         $('#chg').onclick = function () { go('customers', { pick: true }); };
         var ps = $('#ps'), dd = $('#dd');
+        var showAll = false;
+        $('#psAll').onclick = function () { showAll = dd.classList.contains('hidden'); ps.oninput(); };
         ps.oninput = debounce(function () {
           var q = ps.value.trim().toLowerCase();
-          if (!q) { dd.classList.add('hidden'); return; }
-          var l = S.cat.filter(function (x) { return (x.ProductCode + ' ' + x.NameTh).toLowerCase().indexOf(q) >= 0; }).slice(0, 30);
+          if (!q && !showAll) { dd.classList.add('hidden'); return; }
+          var l = S.cat.filter(function (x) { return !q || (x.ProductCode + ' ' + x.NameTh).toLowerCase().indexOf(q) >= 0; }).slice(0, q ? 30 : 80);
           dd.innerHTML = l.map(function (x) {
             return '<div data-p="' + esc(x.ProductCode) + '"><div class="b small">' + esc(x.ProductCode) + '</div>' + esc(x.NameTh) +
               (stock ? '<div class="muted small">บนรถ ' + esc(qtyText(x.ProductCode, (stock[x.ProductCode] || [0])[0])) + '</div>' : '') + '</div>';
@@ -645,27 +689,29 @@
             d.onclick = function () {
               var code = d.getAttribute('data-p');
               if (!cart.items.some(function (i) { return i.code === code; })) cart.items.push({ code: code, base: unitsOf(code)[0].f });
-              ps.value = ''; dd.classList.add('hidden'); draw(); price();
+              ps.value = ''; showAll = false; dd.classList.add('hidden'); draw(); price();
             };
           });
-        }, 120);
+        }, 60);
         var draw = function () {
           $('#lines').innerHTML = cart.items.length ? cart.items.map(function (it, idx) {
             var pr = S.catMap[it.code] || {}, us = unitsOf(it.code), parts = splitBase(it.code, it.base);
             var pv = (cart.preview && cart.preview.lines || []).filter(function (l) { return l.ProductCode === it.code; });
             var lineTot = pv.reduce(function (s, l) { return s + num(l.LineTotal); }, 0), disc = pv[0] ? num(pv[0].DiscountValue) : 0;
             var onHand = stock ? (stock[it.code] || [0])[0] : null;
-            return '<div class="card"><div class="between"><div class="small b">' + esc(it.code) + '</div><button class="btn" data-rm="' + idx + '" type="button" style="padding:4px 10px">ลบ</button></div>' +
-              '<div>' + esc(pr.NameTh) + '</div>' + us.map(function (u) {
+            var big = us[0] || { unit: pr.BaseUnit, f: 1 };
+            return '<div class="card item"><div class="between"><div class="muted small">' + esc(it.code) + '</div><button class="rm" data-rm="' + idx + '" type="button" aria-label="ลบ">' + ic('x', 16) + '</button></div>' +
+              '<div class="b">' + esc(pr.NameTh) + '</div>' +
+              '<div class="muted small">' + (num(pr.PricePerCase) ? '฿' + money(pr.PricePerCase) + ' / ' + esc(pr.CaseUnit || big.unit) : '') + (disc ? ' · ส่วนลด ' + disc + '%' : '') + '</div>' +
+              (onHand !== null ? '<div class="small ' + (it.base > onHand ? 't-r' : 't-g') + '">บนรถตอนนี้ ' + esc(qtyText(it.code, onHand)) + (it.base > onHand ? ' — ไม่พอ' : '') + '</div>' : '') +
+              '<div class="ucols">' + us.map(function (u) {
                 var q = (parts.filter(function (x) { return x.unit === u.unit; })[0] || { qty: 0 }).qty;
-                return '<div class="between line"><div>' + esc(u.unit) + (u.f > 1 ? ' <span class="muted small">(' + u.f + ' ' + esc(pr.BaseUnit) + ')</span>' : '') + '</div>' +
+                return '<div class="ucol"><div class="muted small">' + esc(u.unit) + (u.f > 1 ? ' (' + u.f + ')' : '') + '</div>' +
                   '<div class="qty"><button type="button" data-d="' + idx + '|' + u.f + '|-1">−</button><input class="input" inputmode="numeric" value="' + q + '" data-q="' + idx + '|' + esc(u.unit) + '">' +
-                  '<button type="button" data-d="' + idx + '|' + u.f + '|1">＋</button></div></div>';
-              }).join('') +
-              '<div class="between small" style="margin-top:6px"><span class="muted">' + (disc ? 'ส่วนลด ' + disc + '%' : '') +
-              (onHand !== null ? (disc ? ' · ' : '') + 'บนรถ ' + esc(qtyText(it.code, onHand)) : '') + '</span><span class="b">' + (pv.length ? money(lineTot) : '') + '</span></div>' +
-              (onHand !== null && it.base > onHand ? '<div class="warn" style="margin-top:6px">สินค้าบนรถไม่พอ</div>' : '') + '</div>';
-          }).join('') : '<div class="muted c" style="padding:20px 0">ค้นหาแล้วแตะสินค้าเพื่อเพิ่มลงบิล</div>';
+                  '<button type="button" class="plus" data-d="' + idx + '|' + u.f + '|1">+</button></div></div>';
+              }).join('') + '</div>' +
+              '<div class="between small" style="margin-top:8px"><span class="muted">รวม ' + esc(qfmt(it.base)) + ' ' + esc(pr.BaseUnit || '') + '</span><span class="b">' + (pv.length ? money(lineTot) : '') + '</span></div></div>';
+          }).join('') : '<div class="empty-note">ค้นหาหรือกดปุ่ม ▾ เพื่อเลือกสินค้าลงบิล</div>';
           $$('[data-rm]').forEach(function (b) { b.onclick = function () { cart.items.splice(+b.getAttribute('data-rm'), 1); draw(); price(); }; });
           $$('[data-d]').forEach(function (b) {
             b.onclick = function () {
@@ -698,10 +744,13 @@
           var pv = cart.preview, sub = 0, disc = 0, net = 0;
           (pv && pv.lines || []).forEach(function (l) { sub += num(l.GrossAmount); disc += num(l.DiscountAmount); net += num(l.LineTotal); });
           var vat = r2(net * vatRate() / 100);
-          $('#groups').innerHTML = (pv && pv.groups || []).map(function (g) {
-            return '<div class="hint"><b>' + esc(g.GroupName) + '</b><br>' + qfmt(g.Cases) + ' หีบ → ส่วนลด ' + esc(g.Tier ? g.Tier.DiscountValue : 0) + '%' +
-              (g.NextTier ? ' · อีก ' + qfmt(g.CasesToNext) + ' หีบ ได้ ' + esc(g.NextTier.DiscountValue) + '%' : ' · ได้ขั้นสูงสุดแล้ว') + '</div>';
-          }).join('');
+          $('#groups').innerHTML = (pv && pv.groups && pv.groups.length) ? '<div class="tierbox"><div class="muted small">ส่วนลด Tier' + (isVan() ? ' · ตารางแวน' : '') + '</div>' + pv.groups.map(function (g) {
+            return '<div class="between"><b>' + esc(g.GroupName) + '</b><b>' + qfmt(g.Cases) + ' หีบ → ' + esc(g.Tier ? g.Tier.DiscountValue : 0) + '%</b></div>' +
+              '<div class="muted small">' + (g.NextTier ? 'อีก ' + qfmt(g.CasesToNext) + ' หีบ ได้ ' + esc(g.NextTier.DiscountValue) + '%' : 'ได้ขั้นสูงสุดแล้ว') + '</div>';
+          }).join('') + '</div>' : '';
+          var nItems = cart.items.filter(function (i) { return i.base > 0; }).length;
+          $('#sbInfo').textContent = nItems + ' รายการ' + (disc ? ' · ส่วนลดโปร ' + money(disc) : '');
+          $('#sbTot').textContent = '฿' + money(net + vat);
           $('#tot').innerHTML = '<div><span class="muted">รวมราคาสินค้า</span><span>' + money(sub) + '</span></div><div><span class="muted">ส่วนลด</span><span>-' + money(disc) + '</span></div>' +
             '<div><span class="muted">ก่อนภาษีมูลค่าเพิ่ม</span><span>' + money(net) + '</span></div><div><span class="muted">VAT ' + vatRate() + '%</span><span>' + money(vat) + '</span></div>' +
             '<div class="grand"><span>รวมทั้งสิ้น</span><span>' + money(net + vat) + '</span></div>';
@@ -711,18 +760,17 @@
           if (isVan()) {
             f.innerHTML = '<div class="card"><h3>การชำระเงิน</h3><div class="seg" id="pay">' + [['CASH', 'เงินสด'], ['TRANSFER', 'โอน / QR'], ['CREDIT', 'เครดิต']].map(function (o) {
               return '<button type="button" data-pay="' + o[0] + '" class="' + (cart.pay === o[0] ? 'on' : '') + '">' + o[1] + '</button>'; }).join('') + '</div></div>' +
-              '<button class="btn pri block" id="go" type="button">ออกบิลขาย</button>';
+              '';
             $$('[data-pay]').forEach(function (b) { b.onclick = function () { cart.pay = b.getAttribute('data-pay'); foot(); }; });
           } else {
             var d = new Date(); d.setDate(d.getDate() + 1);
             f.innerHTML = '<div class="card"><label class="f"><span>วันที่ส่งของ</span><input class="input" type="date" id="dd2" value="' + esc(cart.delivery || ymd(d)) + '"></label>' +
-              '<label class="f"><span>หมายเหตุ</span><input class="input" id="nt" value="' + esc(cart.note) + '"></label></div>' +
-              '<button class="btn pri block" id="go" type="button">ยืนยันออเดอร์</button>';
+              '<label class="f"><span>หมายเหตุ</span><input class="input" id="nt" value="' + esc(cart.note) + '"></label></div>';
             $('#dd2').onchange = function () { cart.delivery = this.value; };
             $('#nt').oninput = function () { cart.note = this.value; };
           }
-          $('#go').onclick = submit;
         };
+        $('#go').onclick = function () { submit(); };
         var submit = function () {
           var ls = lines();
           if (!ls.length) { toast('ยังไม่มีสินค้าในบิล', true); return; }
@@ -1130,6 +1178,7 @@
   }
   function boot() {
     $('#back').onclick = back;
+    $('#menuBtn').onclick = function () { if (S.view.name !== 'more') go('more'); };
     applyBrand();
     var bl = brands();
     S.url = LS.get('url') || window.DMS_URL || '';
